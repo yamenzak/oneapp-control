@@ -1,0 +1,290 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "field:tenant_slug",
+ "creation": "2026-08-29 00:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "tenant_slug",
+  "tenant_name",
+  "status",
+  "environment",
+  "owner_email",
+  "owner_user",
+  "cb_place",
+  "shard",
+  "region",
+  "storage_bucket",
+  "storage_jurisdiction",
+  "site_name",
+  "press_site",
+  "primary_domain",
+  "sec_plan",
+  "plan",
+  "subscription",
+  "customer",
+  "cb_plan",
+  "trial_ends_on",
+  "provisioned_on",
+  "suspended_on",
+  "archived_on",
+  "sec_usage",
+  "storage_used_bytes",
+  "database_used_bytes",
+  "extra_storage_gb",
+  "cb_usage",
+  "user_count",
+  "usage_synced_on",
+  "sec_secret",
+  "hmac_secret",
+  "suspended_reason"
+ ],
+ "fields": [
+  {
+   "description": "Subdomain label. Immutable once provisioned.",
+   "fieldname": "tenant_slug",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Tenant Slug",
+   "reqd": 1,
+   "unique": 1
+  },
+  {
+   "fieldname": "tenant_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Tenant Name",
+   "reqd": 1
+  },
+  {
+   "default": "Draft",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Status",
+   "options": "Draft\nProvisioning\nActive\nSuspended\nArchived\nFailed",
+   "reqd": 1
+  },
+  {
+   "default": "Production",
+   "description": "Staging tenants are ours to break: the dev tooling may patch and redeploy the bench they sit on. It refuses to touch a bench carrying a Production tenant, so the default is the safe one.",
+   "fieldname": "environment",
+   "fieldtype": "Select",
+   "in_standard_filter": 1,
+   "label": "Environment",
+   "options": "Production\nStaging",
+   "reqd": 1
+  },
+  {
+   "fieldname": "owner_email",
+   "fieldtype": "Data",
+   "label": "Owner Email",
+   "options": "Email",
+   "reqd": 1
+  },
+  {
+   "description": "Control-plane account for the workspace owner. Customer endpoints resolve the tenant from this, never from a parameter \u2014 that is what keeps one customer out of another's billing.",
+   "fieldname": "owner_user",
+   "fieldtype": "Link",
+   "label": "Owner User",
+   "options": "User",
+   "read_only": 1
+  },
+  {
+   "fieldname": "cb_place",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "shard",
+   "fieldtype": "Link",
+   "in_standard_filter": 1,
+   "label": "Shard",
+   "options": "Shard"
+  },
+  {
+   "description": "Chosen at signup.",
+   "fieldname": "region",
+   "fieldtype": "Link",
+   "label": "Region",
+   "options": "Region"
+  },
+  {
+   "fieldname": "storage_bucket",
+   "fieldtype": "Link",
+   "label": "Storage Bucket",
+   "options": "Storage Bucket",
+   "read_only": 1
+  },
+  {
+   "default": "Global",
+   "description": "Fixed at signup; moving objects between jurisdictions later is a migration, not a setting.",
+   "fieldname": "storage_jurisdiction",
+   "fieldtype": "Select",
+   "label": "Storage Jurisdiction",
+   "options": "Global\nEU"
+  },
+  {
+   "description": "Permanent internal address. Never the custom domain.",
+   "fieldname": "site_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Site Name",
+   "read_only": 1
+  },
+  {
+   "fieldname": "press_site",
+   "fieldtype": "Data",
+   "label": "Press Site",
+   "read_only": 1
+  },
+  {
+   "description": "Customer-owned domain, once verified.",
+   "fieldname": "primary_domain",
+   "fieldtype": "Data",
+   "label": "Primary Domain"
+  },
+  {
+   "fieldname": "sec_plan",
+   "fieldtype": "Section Break",
+   "label": "Plan and billing"
+  },
+  {
+   "fieldname": "plan",
+   "fieldtype": "Link",
+   "in_standard_filter": 1,
+   "label": "Plan",
+   "options": "Plan"
+  },
+  {
+   "fieldname": "subscription",
+   "fieldtype": "Link",
+   "label": "Subscription",
+   "options": "Subscription",
+   "read_only": 1
+  },
+  {
+   "description": "ERPNext Customer. Created on first successful payment.",
+   "fieldname": "customer",
+   "fieldtype": "Link",
+   "label": "Customer",
+   "options": "Customer"
+  },
+  {
+   "fieldname": "cb_plan",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "trial_ends_on",
+   "fieldtype": "Date",
+   "label": "Trial Ends On"
+  },
+  {
+   "fieldname": "provisioned_on",
+   "fieldtype": "Datetime",
+   "label": "Provisioned On",
+   "read_only": 1
+  },
+  {
+   "fieldname": "suspended_on",
+   "fieldtype": "Datetime",
+   "label": "Suspended On",
+   "read_only": 1
+  },
+  {
+   "fieldname": "archived_on",
+   "fieldtype": "Datetime",
+   "label": "Archived On",
+   "read_only": 1
+  },
+  {
+   "fieldname": "sec_usage",
+   "fieldtype": "Section Break",
+   "label": "Usage"
+  },
+  {
+   "default": "0",
+   "fieldname": "storage_used_bytes",
+   "fieldtype": "Float",
+   "label": "Storage Used Bytes",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "description": "Reported by the site. The resource that actually threatens the server, so it is capped like file storage.",
+   "fieldname": "database_used_bytes",
+   "fieldtype": "Float",
+   "label": "Database Used Bytes",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "description": "Purchased add-on, added to the plan quota. Does not expire \u2014 storage is never paid for with AI credits, which would make a large upload silently drain the AI budget.",
+   "fieldname": "extra_storage_gb",
+   "fieldtype": "Int",
+   "label": "Extra Storage Gb"
+  },
+  {
+   "fieldname": "cb_usage",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "0",
+   "fieldname": "user_count",
+   "fieldtype": "Int",
+   "label": "User Count",
+   "read_only": 1
+  },
+  {
+   "fieldname": "usage_synced_on",
+   "fieldtype": "Datetime",
+   "label": "Usage Synced On",
+   "read_only": 1
+  },
+  {
+   "fieldname": "sec_secret",
+   "fieldtype": "Section Break",
+   "label": "Integration"
+  },
+  {
+   "description": "Shared secret for signed calls with this tenant's site.",
+   "fieldname": "hmac_secret",
+   "fieldtype": "Password",
+   "label": "Hmac Secret"
+  },
+  {
+   "fieldname": "suspended_reason",
+   "fieldtype": "Small Text",
+   "label": "Suspended Reason"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-08-29 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Control Plane",
+ "name": "Tenant",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "show_title_field_in_link": 1,
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "title_field": "tenant_name",
+ "track_changes": 1
+}
