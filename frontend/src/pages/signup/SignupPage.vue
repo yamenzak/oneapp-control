@@ -3,18 +3,20 @@
     <div class="mx-auto max-w-lg px-5">
       <div class="mb-6 text-center">
         <Avatar :label="TENANT_APP" shape="square" size="2xl" class="mx-auto" />
-        <h1 class="mt-3 text-xl font-semibold text-ink-gray-9">Create your workspace</h1>
+        <h1 class="mt-3 text-xl-semibold text-ink-gray-9">Create your workspace</h1>
       </div>
 
       <div v-if="!open.checked" class="grid place-items-center py-16">
         <LoadingIndicator class="size-5 text-ink-gray-5" />
       </div>
 
-      <Alert v-else-if="!open.open" variant="warning" title="Signups are paused">
-        We are not taking new workspaces at the moment. Please check back shortly.
+      <Alert v-else-if="!open.open" theme="amber" title="Signups are paused">
+        <template #description>
+          We are not taking new workspaces at the moment. Please check back shortly.
+        </template>
       </Alert>
 
-      <div v-else class="flex flex-col gap-4 rounded-lg border border-outline-gray-2 bg-surface-white p-5">
+      <div v-else class="flex flex-col gap-4 rounded-6 border border-outline-gray-2 bg-surface-base p-5">
         <FormControl
           v-model="form.workspace_name"
           label="Workspace name"
@@ -154,12 +156,12 @@ async function submit() {
 }
 
 onMounted(async () => {
-  const status = await callMethod(method('signup_open'), {}, { silent: true })
+  const status = await callMethod(method('signup_open'), {}, { silent: true, method: 'GET' })
   Object.assign(open, { checked: true, open: status.open })
   if (!status.open) return
 
-  plans.value = (await callMethod(method('plans'), {}, { silent: true })) || []
-  regions.value = (await callMethod(method('regions'), {}, { silent: true })) || []
+  plans.value = (await callMethod(method('plans'), {}, { silent: true, method: 'GET' })) || []
+  regions.value = (await callMethod(method('regions'), {}, { silent: true, method: 'GET' })) || []
   form.plan = plans.value[0]?.code || ''
   form.region = regions.value[0]?.code || ''
 })

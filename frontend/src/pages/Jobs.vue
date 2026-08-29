@@ -19,13 +19,13 @@
       description="Jobs appear here when a tenant is created, suspended, resumed or archived."
     />
 
-    <List v-else :columns="COLUMNS" divider="full">
+    <List v-else :columns="COLUMNS" :row-height="52" class="list-row-px-3" divider="full">
       <ListHeader>
-        <ListHeaderCell v-for="c in HEADERS" :key="c" :label="c" />
+        <ListHeaderCell v-for="c in HEADERS" :key="c">{{ c }}</ListHeaderCell>
       </ListHeader>
 
-      <ListRows :items="rows" v-slot="{ item: job }">
-        <ListRow :row-key="job.name">
+      <ListRows :items="rows" row-key="name" v-slot="{ item: job, value }">
+        <ListRow :value="value">
           <ListCell>
             <div class="min-w-0">
               <p class="truncate text-base text-ink-gray-8">{{ job.action }}</p>
@@ -61,12 +61,12 @@ import {
   List, ListHeader, ListHeaderCell, ListRows, ListRow, ListCell,
 } from '@/ui'
 import EmptyState from '../components/EmptyState.vue'
-import { useList } from '../lib/api'
+import { useDocList } from '../lib/api'
 
 const COLUMNS = ['minmax(0,1fr)', '14rem', '8rem', '9rem']
 const HEADERS = ['Job', 'Step', 'Attempts', 'State']
 
-const resource = useList('Provisioning Job', {
+const resource = useDocList('Provisioning Job', {
   fields: ['name', 'tenant', 'action', 'state', 'step', 'attempts', 'last_error'],
   orderBy: 'creation desc',
   limit: 30,

@@ -12,12 +12,12 @@
 
     <EmptyState v-else-if="!rows.length" class="!py-12" :title="emptyTitle" :description="emptyHint" />
 
-    <List v-else class="mt-5" :columns="columns" divider="full">
+    <List v-else :columns="columns" :row-height="52" class="mt-5 list-row-px-3" divider="full">
       <ListHeader>
-        <ListHeaderCell v-for="c in headers" :key="c" :label="c" />
+        <ListHeaderCell v-for="c in headers" :key="c">{{ c }}</ListHeaderCell>
       </ListHeader>
-      <ListRows :items="rows" v-slot="{ item: row }">
-        <ListRow :row-key="row.name" @click="form.length && edit(row)">
+      <ListRows :items="rows" row-key="name" v-slot="{ item: row, value }">
+        <ListRow :value="value" @click="form.length && edit(row)">
           <ListCell v-for="(cell, i) in cellsFor(row)" :key="i">
             <Badge v-if="cell.badge" :theme="cell.theme" :label="cell.value" variant="subtle" />
             <span v-else class="truncate text-p-sm" :class="cell.muted ? 'text-ink-gray-5' : 'text-ink-gray-8'">
@@ -48,7 +48,7 @@ import {
 } from '@/ui'
 import CatalogueForm from './CatalogueForm.vue'
 import EmptyState from '../EmptyState.vue'
-import { useList } from '../../lib/api'
+import { useDocList } from '../../lib/api'
 
 /**
  * A read-only catalogue panel.
@@ -89,7 +89,7 @@ function edit(row) {
   showForm.value = true
 }
 
-const resource = useList(props.doctype, {
+const resource = useDocList(props.doctype, {
   fields: props.fields,
   orderBy: props.orderBy,
   limit: 100,

@@ -31,16 +31,21 @@
   <div v-if="tenant" class="mx-auto max-w-3xl p-5">
     <Alert
       v-if="tenant.status === 'Failed'"
-      variant="error"
+      theme="red"
       title="Provisioning failed"
       class="mb-5"
     >
-      {{ tenant.suspended_reason || 'See the provisioning job for the reason.' }}
+      <template #description>
+        {{ tenant.suspended_reason || 'See the provisioning job for the reason.' }}
+      </template>
     </Alert>
 
     <List :columns="['12rem', 'minmax(0,1fr)']" divider="full">
-      <ListRows :items="rows" v-slot="{ item: row }">
-        <ListRow :row-key="row.label">
+      <ListRows :items="rows" row-key="label" v-slot="{ item: row, value }">
+        <!-- Static rows wrap, so no rowHeight — the family leaves height
+             auto without one. frappe-ui pads only interactive rows, so the
+             vertical rhythm here is this page's to set. -->
+        <ListRow :value="value" class="py-3">
           <ListCell>
             <span class="text-p-sm text-ink-gray-6">{{ row.label }}</span>
           </ListCell>
@@ -65,7 +70,9 @@ const props = defineProps({ name: { type: String, required: true } })
 
 // Live: a status change from the provisioning worker lands here on its own.
 const resource = useDocument('Tenant', () => props.name)
-const tenant = computed(() => resource.data)
+// useDoc exposes the document as `doc`, and shares it with any list that
+// fetched the same record — a status change from either lands on both.
+const tenant = computed(() => resource.doc)
 
 const rows = computed(() => {
   const t = tenant.value

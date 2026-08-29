@@ -2,23 +2,27 @@
   <SettingsHeader :title="title" :description="description" />
 
   <SettingsBody>
-    <div class="flex flex-col gap-5 pt-6">
-      <!-- SettingsRow's prop is `title`; `label` is silently ignored and the
-           row renders with no name beside its control. -->
-      <SettingsRow
+    <!--
+      Stacked FormControls, not SettingsRow. SettingsRow is label-left /
+      control-right with a `shrink-0` control and a `gap-8` between them — the
+      shape frappe-ui uses for a Switch or a Select. Give it a full-width text
+      input and on a phone the control keeps its width while the label column
+      collapses, wrapping "API host" one word per line. frappe-ui's own
+      ProfilePanel story stacks FormControls straight into SettingsBody for
+      exactly this reason, and the label and description are FormControl's own
+      props, so nothing is lost by dropping the row.
+    -->
+    <div class="flex max-w-xl flex-col gap-6 pt-6">
+      <FormControl
         v-for="field in fields"
         :key="field.name"
-        :title="field.label"
+        v-model="form[field.name]"
+        :type="field.type || 'text'"
+        :label="field.label"
         :description="field.hint"
-      >
-        <FormControl
-          v-model="form[field.name]"
-          :type="field.type || 'text'"
-          :placeholder="field.placeholder"
-          :options="field.options"
-          class="w-full"
-        />
-      </SettingsRow>
+        :placeholder="field.placeholder"
+        :options="field.options"
+      />
     </div>
 
     <div class="mt-6 flex items-center gap-2">
@@ -30,8 +34,8 @@
 
 <script setup>
 import { computed, reactive, ref, watch } from 'vue'
-import { Button, FormControl, SettingsHeader, SettingsBody, SettingsRow } from '@/ui'
-import { callMethod } from '../../lib/resource'
+import { Button, FormControl, SettingsHeader, SettingsBody } from '@/ui'
+import { useDocument, useDocWrites } from '../../lib/resource'
 
 /**
  * A settings panel backed by a Frappe Single doctype.
@@ -55,20 +59,26 @@ const dirty = computed(() =>
   props.fields.some((f) => form[f.name] !== original.value[f.name]),
 )
 
-async function load() {
-  const doc = await callMethod(
-    'frappe.client.get',
-    { doctype: props.doctype, name: props.doctype },
-    { silent: true },
-  )
-  for (const field of props.fields) {
-    // Password fields come back masked; leaving the mask in the form would
-    // write it back as the literal value on save.
-    const value = field.type === 'password' ? '' : (doc?.[field.name] ?? '')
-    form[field.name] = value
-    original.value[field.name] = value
-  }
-}
+// A Single's document name is the doctype's own name. `doctype` is fixed per
+// panel, so it is passed as a value — only `name` accepts a getter.
+const record = useDocument(props.doctype, props.doctype, { silent: true })
+const writes = useDocWrites(props.doctype, { successMessage: 'Settings saved' })
+
+// The document arrives asynchronously, and again after every save, so the form
+// is filled from it reactively rather than fetched imperatively once.
+watch(
+  () => record.doc,
+  (doc) => {
+    for (const field of props.fields) {
+      // Password fields come back masked; leaving the mask in the form would
+      // write it back as the literal value on save.
+      const value = field.type === 'password' ? '' : (doc?.[field.name] ?? '')
+      form[field.name] = value
+      original.value[field.name] = value
+    }
+  },
+  { immediate: true },
+)
 
 async function save() {
   saving.value = true
@@ -83,16 +93,10 @@ async function save() {
     }
     if (!Object.keys(changed).length) return
 
-    await callMethod(
-      'frappe.client.set_value',
-      { doctype: props.doctype, name: props.doctype, fieldname: changed },
-      { successMessage: 'Settings saved' },
-    )
+    await writes.setValue({ name: props.doctype, ...changed })
     Object.assign(original.value, changed)
   } finally {
     saving.value = false
   }
 }
-
-watch(() => props.doctype, load, { immediate: true })
 </script>

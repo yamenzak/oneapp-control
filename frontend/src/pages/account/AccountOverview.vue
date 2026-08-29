@@ -7,16 +7,18 @@
   <div v-if="data" class="flex flex-col gap-6 py-5">
     <Alert
       v-if="exceeded.length"
-      variant="warning"
+      theme="amber"
       :title="`At the ${exceeded.join(' and ')} limit`"
     >
-      Nothing has been deleted. Free some space, or add more below — new uploads
-      resume as soon as there is room.
+      <template #description>
+        Nothing has been deleted. Free some space, or add more below — new uploads
+        resume as soon as there is room.
+      </template>
     </Alert>
 
     <section>
-      <h3 class="mb-3 text-base font-medium text-ink-gray-8">Usage</h3>
-      <div class="flex flex-col gap-4 rounded border border-outline-gray-2 p-4">
+      <h3 class="mb-3 text-base-medium text-ink-gray-8">Usage</h3>
+      <div class="flex flex-col gap-4 rounded-4 border border-outline-gray-2 p-4">
         <UsageBar label="File storage" :usage="data.usage.storage" />
         <UsageBar label="Database" :usage="data.usage.database" />
         <UsageBar
@@ -29,10 +31,10 @@
     </section>
 
     <section>
-      <h3 class="mb-3 text-base font-medium text-ink-gray-8">AI credits</h3>
-      <div class="rounded border border-outline-gray-2 p-4">
+      <h3 class="mb-3 text-base-medium text-ink-gray-8">AI credits</h3>
+      <div class="rounded-4 border border-outline-gray-2 p-4">
         <div class="flex items-baseline justify-between">
-          <span class="text-2xl font-medium tabular-nums text-ink-gray-9">
+          <span class="text-2xl-medium tabular-nums text-ink-gray-9">
             {{ Math.round(data.credits.available) }}
           </span>
           <span class="text-p-sm text-ink-gray-5">available</span>
@@ -45,10 +47,13 @@
     </section>
 
     <section>
-      <h3 class="mb-3 text-base font-medium text-ink-gray-8">Workspace</h3>
+      <h3 class="mb-3 text-base-medium text-ink-gray-8">Workspace</h3>
       <List :columns="['10rem', 'minmax(0,1fr)']" divider="full">
-        <ListRows :items="details" v-slot="{ item: row }">
-          <ListRow :row-key="row.label">
+        <ListRows :items="details" row-key="label" v-slot="{ item: row, value }">
+          <!-- Static rows wrap, so no rowHeight — the family leaves height
+               auto without one. frappe-ui pads only interactive rows, so the
+               vertical rhythm here is this page's to set. -->
+          <ListRow :value="value" class="py-3">
             <ListCell>
               <span class="text-p-sm text-ink-gray-6">{{ row.label }}</span>
             </ListCell>
