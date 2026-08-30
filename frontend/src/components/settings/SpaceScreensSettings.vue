@@ -1,6 +1,6 @@
 <template>
   <SettingsHeader
-    title="App screens"
+    title="Space screens"
     description="What an app puts in front of a customer. A screen names a doctype and the fields worth showing; OneSpace renders the list and the record from the tenant site's own metadata, so most apps need no frontend code at all."
     :class="PANEL_HEADER"
   >
@@ -32,7 +32,7 @@
       />
 
       <EmptyState
-        v-if="app && !views.length"
+        v-if="app && !screens.length"
         class="!py-8"
         icon="lucide-hammer"
         title="No screens yet"
@@ -40,53 +40,53 @@
       />
 
       <div
-        v-for="(view, index) in views"
+        v-for="(screen, index) in screens"
         :key="index"
         class="flex flex-col gap-3 rounded-6 border border-outline-gray-2 p-4"
       >
         <div class="flex items-center justify-between gap-3">
           <span class="text-base-medium text-ink-gray-8">
-            {{ view.label || 'Untitled screen' }}
+            {{ screen.label || 'Untitled screen' }}
           </span>
           <Button
             icon="lucide-trash-2"
             variant="ghost"
             label="Remove screen"
-            @click="views.splice(index, 1)"
+            @click="screens.splice(index, 1)"
           />
         </div>
 
         <div class="grid gap-3 sm:grid-cols-2">
-          <FormControl v-model="view.label" label="Label" placeholder="Invoices" />
+          <FormControl v-model="screen.label" label="Label" placeholder="Invoices" />
           <FormControl
-            v-model="view.view"
+            v-model="screen.screen"
             label="Slug"
             placeholder="invoices"
             description="In the URL. Stable — a bookmark points at it."
           />
-          <FormControl v-model="view.icon" type="select" label="Icon" :options="ICONS" />
+          <FormControl v-model="screen.icon" type="select" label="Icon" :options="ICONS" />
           <FormControl
-            v-model="view.document_type"
+            v-model="screen.document_type"
             label="Doctype"
             placeholder="Sales Invoice"
             description="Must also be in the app's manifest below."
           />
           <FormControl
-            v-model="view.fields"
+            v-model="screen.fields"
             label="Columns"
             placeholder="customer,status,grand_total"
             description="Comma-separated. Labels and types come from the tenant site. Empty uses the doctype's own list fields."
           />
-          <FormControl v-model="view.order_by" label="Order by" placeholder="modified desc" />
+          <FormControl v-model="screen.order_by" label="Order by" placeholder="modified desc" />
           <FormControl
-            v-model="view.filters"
+            v-model="screen.filters"
             type="textarea"
             label="Always filter by"
             :rows="2"
             :placeholder="FILTER_EXAMPLE"
           />
           <FormControl
-            v-model="view.component"
+            v-model="screen.component"
             label="Custom component"
             placeholder="crm/pipeline"
             description="Escape hatch for a screen a list cannot be. Set it and the doctype above is ignored."
@@ -116,36 +116,36 @@ import {
 } from '@/ui'
 import EmptyState from '../EmptyState.vue'
 import { PANEL_BODY, PANEL_FOOTER, PANEL_HEADER } from './geometry'
-import { APP_ICONS } from '../../lib/icons'
+import { SPACE_ICONS } from '../../lib/icons'
 import { api, useDocList } from '../../lib/api'
 import { activeSettingsTab } from '../../lib/settings'
 
-const ICONS = APP_ICONS
+const ICONS = SPACE_ICONS
 
 // In a constant because the example is JSON, and JSON in a template attribute
 // fights the linter's quoting rule.
 const FILTER_EXAMPLE = '{"status": "Open"}'
 
 const app = ref('')
-const views = ref([])
+const screens = ref([])
 const loading = ref(false)
 const saving = ref(false)
 const error = ref('')
 
-const appList = useDocList('OneApp App', {
-  fields: ['name', 'app_label'],
+const appList = useDocList('OneSpace Space', {
+  fields: ['name', 'space_label'],
   orderBy: 'sort_order asc',
   limit: 200,
 })
 
 const apps = computed(() => appList.data || [])
 const appOptions = computed(() =>
-  apps.value.map((a) => ({ label: a.app_label || a.name, value: a.name })),
+  apps.value.map((a) => ({ label: a.space_label || a.name, value: a.name })),
 )
 
 const add = () => {
-  views.value.push({
-    view: '',
+  screens.value.push({
+    screen: '',
     label: '',
     icon: 'lucide-layout-grid',
     document_type: '',
@@ -158,12 +158,12 @@ const add = () => {
 
 const loadViews = async () => {
   if (!app.value) {
-    views.value = []
+    screens.value = []
     return
   }
   loading.value = true
   try {
-    views.value = (await api.appViews(app.value)) || []
+    screens.value = (await api.appViews(app.value)) || []
   } finally {
     loading.value = false
   }
@@ -173,7 +173,7 @@ const save = async () => {
   saving.value = true
   error.value = ''
   try {
-    await api.setAppViews(app.value, views.value)
+    await api.setAppViews(app.value, screens.value)
     await loadViews()
   } catch (e) {
     error.value = e.message || String(e)
@@ -192,7 +192,7 @@ watch(apps, (found) => {
 watch(
   activeSettingsTab,
   (tab) => {
-    if (tab === 'app-screens' && app.value && !views.value.length) loadViews()
+    if (tab === 'app-screens' && app.value && !screens.value.length) loadViews()
   },
   { immediate: true },
 )

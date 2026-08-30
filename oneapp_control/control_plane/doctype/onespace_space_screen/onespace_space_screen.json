@@ -5,13 +5,15 @@
  "editable_grid": 1,
  "engine": "InnoDB",
  "field_order": [
-  "view",
+  "screen",
   "label",
   "icon",
   "cb_view_source",
   "document_type",
   "fields",
   "component",
+  "view_types",
+  "view_settings",
   "sec_view_query",
   "filters",
   "cb_view_sort",
@@ -20,10 +22,10 @@
  "fields": [
   {
    "description": "Slug in the URL, e.g. `invoices`. Stable: it is what a bookmark points at.",
-   "fieldname": "view",
+   "fieldname": "screen",
    "fieldtype": "Data",
    "in_list_view": 1,
-   "label": "View",
+   "label": "Screen",
    "reqd": 1
   },
   {
@@ -59,7 +61,7 @@
    "label": "Fields"
   },
   {
-   "description": "Escape hatch: a component the SPA registered under `appCode/view`. Set this and the doctype above is ignored.",
+   "description": "Escape hatch: a component the SPA registered under `spaceCode/screen`. Set this and the doctype above is ignored.",
    "fieldname": "component",
    "fieldtype": "Data",
    "label": "Component"
@@ -85,6 +87,20 @@
    "fieldname": "order_by",
    "fieldtype": "Data",
    "label": "Order By"
+  },
+  {
+   "fieldname": "view_types",
+   "fieldtype": "Data",
+   "label": "View Types",
+   "default": "list",
+   "description": "How this screen may be looked at, in order \u2014 `list`, `board`, `calendar`, `grid`, `map`. The first is what it opens with. Anything the SPA does not build yet is ignored rather than refused, so a manifest can name one before it ships."
+  },
+  {
+   "fieldname": "view_settings",
+   "fieldtype": "Code",
+   "options": "JSON",
+   "label": "View Settings",
+   "description": "Per type, what that type needs: `{\"board\": {\"column_field\": \"status\"}, \"calendar\": {\"start_field\": \"date\"}}`. Every fieldname in here is checked against the doctype like any other."
   }
  ],
  "index_web_pages_for_search": 1,
@@ -93,7 +109,7 @@
  "modified": "2026-08-29 00:00:00.000000",
  "modified_by": "Administrator",
  "module": "Control Plane",
- "name": "OneApp App View",
+ "name": "OneSpace Space Screen",
  "owner": "Administrator",
  "permissions": [],
  "sort_field": "modified",

@@ -1,4 +1,4 @@
-frappe.ui.form.on("OneApp Control Settings", {
+frappe.ui.form.on("OneSpace Control Settings", {
 	refresh(frm) {
 		frm.add_custom_button(__("Push Bench Config to All Shards"), () => {
 			frappe.confirm(

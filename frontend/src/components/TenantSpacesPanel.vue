@@ -15,12 +15,12 @@
         <ListHeaderCell v-for="c in visible" :key="c.key">{{ c.header }}</ListHeaderCell>
       </ListHeader>
 
-      <ListRows :items="rows" row-key="app_code" v-slot="{ item: app, value }">
+      <ListRows :items="rows" row-key="space_code" v-slot="{ item: app, value }">
         <ListRow :value="value">
           <ListCell>
-            <Icon :name="appIcon(app.icon)" class="size-4 shrink-0 text-ink-gray-7" />
+            <Icon :name="spaceIcon(app.icon)" class="size-4 shrink-0 text-ink-gray-7" />
             <div class="ml-3 min-w-0">
-              <p class="truncate text-base text-ink-gray-8">{{ app.app_label }}</p>
+              <p class="truncate text-base text-ink-gray-8">{{ app.space_label }}</p>
               <p class="truncate text-xs text-ink-gray-5">
                 {{ app.availability === 'Restricted' ? 'By entitlement only' : 'On every plan' }}
               </p>
@@ -48,7 +48,7 @@
               :label="app.entitled ? 'Revoke' : 'Grant'"
               :theme="app.entitled ? 'red' : 'gray'"
               variant="subtle"
-              :loading="busy === app.app_code"
+              :loading="busy === app.space_code"
               @click="toggle(app)"
             />
           </ListCell>
@@ -66,7 +66,7 @@ import {
 } from '@/ui'
 // An icon name that only exists in the database emits no CSS, so anything
 // outside the generated set falls back to one that does.
-import { appIcon } from '../lib/icons'
+import { spaceIcon } from '../lib/icons'
 import { useListColumns } from '../lib/list'
 import { api } from '../lib/api'
 
@@ -95,10 +95,10 @@ onMounted(load)
 watch(() => props.tenant, load)
 
 async function toggle(app) {
-  busy.value = app.app_code
+  busy.value = app.space_code
   try {
-    if (app.entitled) await api.revokeApp(props.tenant, app.app_code)
-    else await api.grantApp(props.tenant, app.app_code)
+    if (app.entitled) await api.revokeApp(props.tenant, app.space_code)
+    else await api.grantApp(props.tenant, app.space_code)
     await load()
   } finally {
     busy.value = ''

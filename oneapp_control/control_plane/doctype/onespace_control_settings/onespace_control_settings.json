@@ -328,7 +328,7 @@
  "modified": "2026-08-29 00:00:00.000000",
  "modified_by": "Administrator",
  "module": "Control Plane",
- "name": "OneApp Control Settings",
+ "name": "OneSpace Control Settings",
  "owner": "Administrator",
  "permissions": [
   {

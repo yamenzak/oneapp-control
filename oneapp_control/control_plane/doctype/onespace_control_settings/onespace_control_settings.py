@@ -14,7 +14,7 @@ REDIRECTING_PRESS_HOSTS = ("frappecloud.com", "www.frappecloud.com")
 CANONICAL_PRESS_URL = "https://cloud.frappe.io"
 
 
-class OneAppControlSettings(Document):
+class OneSpaceControlSettings(Document):
 	def validate(self):
 		self.validate_press_url()
 

@@ -4,7 +4,7 @@ from frappe.model.document import Document
 from frappe.utils import now_datetime
 
 
-class AppEntitlement(Document):
+class SpaceEntitlement(Document):
 	def validate(self):
 		self.validate_unique()
 		if not self.granted_on:
@@ -12,7 +12,7 @@ class AppEntitlement(Document):
 
 	def validate_unique(self):
 		existing = frappe.db.exists(
-			"App Entitlement",
+			"Space Entitlement",
 			{"tenant": self.tenant, "app": self.app, "name": ("!=", self.name)},
 		)
 		if existing:

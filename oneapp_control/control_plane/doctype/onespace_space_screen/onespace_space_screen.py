@@ -2,5 +2,5 @@ import frappe
 from frappe.model.document import Document
 
 
-class OneAppAppView(Document):
+class OneSpaceSpaceScreen(Document):
 	pass
