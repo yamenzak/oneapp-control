@@ -18,8 +18,9 @@ import frappe
 from frappe import _
 
 from oneapp_control import portal
-from oneapp_control.billing import checkout, stripe_client
+from oneapp_control.billing import checkout, quotas, stripe_client
 from oneapp_control.credits import ledger
+from oneapp_control.entitlements import registry
 
 
 def require_workspace(workspace: str):
@@ -296,3 +297,279 @@ def request_custom_domain(workspace: str, domain: str) -> str:
 		{"domain": domain},
 		idempotency_key=f"domain:{tenant.name}:{domain}",
 	).name
+
+
+# --------------------------------------------------------------------------- #
+# People
+#
+# The control plane cannot write into a tenant's database — the signed sync is
+# the only channel and it runs one way — so an invite is a row here and the
+# tenant site reconciles its own Users against it. That is the same route the
+# owner account already takes, and it means an invite is live on the next sync
+# rather than immediately. `members()` says so rather than pretending otherwise.
+# --------------------------------------------------------------------------- #
+
+ACCESS_LEVELS = ("Member", "Admin")
+
+
+def _seats(tenant) -> dict:
+	"""Seats used and allowed. The owner holds one; members hold the rest.
+
+	Counted from this list rather than from `Tenant.user_count`, which is what
+	the workspace's site last reported. The two agree once a sync has run, and
+	before that this one is right: an invite made a minute ago is a seat that is
+	taken, and enforcing against the older number would let a plan be
+	over-subscribed in the window between inviting and syncing.
+	"""
+	used = 1 + len(tenant.members or [])
+	quota = tenant.max_users or 0
+	return {"used": used, "quota": quota, "remaining": max(quota - used, 0) if quota else None}
+
+
+@frappe.whitelist(methods=["GET"])
+def members(workspace: str) -> dict:
+	"""Everyone who can sign in to the workspace, the owner first."""
+	tenant = require_workspace(workspace)
+
+	people = [
+		{
+			"email": tenant.owner_email,
+			"full_name": tenant.tenant_name,
+			"access": "Owner",
+			"is_owner": True,
+			"invited_on": tenant.creation,
+		}
+	]
+	people += [
+		{
+			"email": row.email,
+			"full_name": row.full_name or "",
+			"access": row.access,
+			"is_owner": False,
+			"invited_on": row.invited_on,
+		}
+		for row in (tenant.members or [])
+	]
+
+	return {
+		"members": people,
+		"seats": _seats(tenant),
+		"access_levels": list(ACCESS_LEVELS),
+		# An invite becomes an account on the workspace's next sync, not now.
+		# Saying so is the difference between "slow" and "broken".
+		"last_synced": tenant.usage_synced_on,
+	}
+
+
+@frappe.whitelist(methods=["POST"])
+def invite_member(workspace: str, email: str, full_name: str = "", access: str = "Member") -> dict:
+	"""Add someone to the workspace, within the plan's seat count."""
+	tenant = require_workspace(workspace)
+
+	email = (email or "").strip().lower()
+	if not email:
+		frappe.throw(_("An email address is required."))
+	frappe.utils.validate_email_address(email, throw=True)
+
+	if access not in ACCESS_LEVELS:
+		frappe.throw(_("Unknown access level {0}.").format(access))
+
+	if email == (tenant.owner_email or "").strip().lower():
+		frappe.throw(_("{0} owns this workspace already.").format(email))
+
+	if any((row.email or "").strip().lower() == email for row in tenant.members or []):
+		frappe.throw(_("{0} is already a member.").format(email))
+
+	seats = _seats(tenant)
+	if seats["quota"] and seats["used"] >= seats["quota"]:
+		# Refused here rather than at the tenant site, where the person would
+		# already have had a welcome email for an account that cannot exist.
+		frappe.throw(
+			_("This plan includes {0} seats and all are in use. Change plan to add more.").format(
+				seats["quota"]
+			)
+		)
+
+	tenant.append(
+		"members",
+		{
+			"email": email,
+			"full_name": (full_name or "").strip(),
+			"access": access,
+			"invited_on": frappe.utils.now_datetime(),
+		},
+	)
+	tenant.save(ignore_permissions=True)
+	frappe.db.commit()
+
+	return members(workspace)
+
+
+@frappe.whitelist(methods=["POST"])
+def remove_member(workspace: str, email: str) -> dict:
+	"""Take someone out of the workspace.
+
+	The row goes; the tenant site disables that User on its next sync rather
+	than deleting it, because the documents they created are the workspace's and
+	Frappe hangs ownership off the account.
+	"""
+	tenant = require_workspace(workspace)
+	email = (email or "").strip().lower()
+
+	if email == (tenant.owner_email or "").strip().lower():
+		frappe.throw(_("The owner cannot be removed from their own workspace."))
+
+	remaining = [row for row in (tenant.members or []) if (row.email or "").strip().lower() != email]
+	if len(remaining) == len(tenant.members or []):
+		frappe.throw(_("{0} is not a member of this workspace.").format(email))
+
+	tenant.members = []
+	for row in remaining:
+		tenant.append(
+			"members",
+			{
+				"email": row.email,
+				"full_name": row.full_name,
+				"access": row.access,
+				"invited_on": row.invited_on,
+			},
+		)
+	tenant.save(ignore_permissions=True)
+	frappe.db.commit()
+
+	return members(workspace)
+
+
+# --------------------------------------------------------------------------- #
+# What the workspace has, and what changing plan would give it
+# --------------------------------------------------------------------------- #
+
+@frappe.whitelist(methods=["GET"])
+def apps(workspace: str) -> dict:
+	"""The apps this workspace can open.
+
+	The same manifest the launcher renders, so a customer looking at their
+	account sees exactly what they see when they sign in. `included` separates
+	what every plan carries from what was granted to them specifically —
+	otherwise "why do we have this?" has no answer on this page.
+	"""
+	tenant = require_workspace(workspace)
+
+	granted = set(
+		frappe.get_all(
+			"App Entitlement",
+			filters={"tenant": tenant.name, "enabled": 1},
+			pluck="app",
+		)
+	)
+
+	return {
+		"apps": [
+			{
+				"code": app["app_code"],
+				"label": app["app_label"],
+				"icon": app.get("icon"),
+				"included": app["app_code"] not in granted,
+			}
+			for app in registry.apps_for_tenant(tenant.name)
+		],
+		"workspace_url": f"https://{tenant.primary_domain or tenant.site_name}"
+		if (tenant.primary_domain or tenant.site_name)
+		else None,
+	}
+
+
+@frappe.whitelist(methods=["POST"])
+def change_plan(workspace: str, plan: str, interval: str = "Monthly") -> dict:
+	"""Move this workspace onto another plan.
+
+	Through us rather than Stripe's billing portal, because the portal cannot
+	know our quotas: it would sell a downgrade to a workspace already holding
+	more than the smaller plan allows, and the customer would find out
+	afterwards, over quota. `billing.checkout.change_plan` runs the same fit
+	check this page renders.
+	"""
+	tenant = require_workspace(workspace)
+	return checkout.change_plan(tenant.name, plan, interval)
+
+
+@frappe.whitelist(methods=["GET"])
+def plans(workspace: str) -> dict:
+	"""What this workspace is on, and what else it could be on.
+
+	Every plan carries every feature — they differ only in quotas, which is why
+	no feature flags exist anywhere in this codebase (DECISIONS §3). So the
+	comparison is the numbers, and a plan that would not fit what the workspace
+	already uses is marked rather than merely listed: finding out a downgrade is
+	impossible *after* choosing it is the worst version of this page.
+	"""
+	tenant = require_workspace(workspace)
+	usage = usage_for(tenant)
+
+	fields = [
+		"name", "plan_name", "audience", "currency",
+		"price_monthly", "price_yearly",
+		"storage_gb", "database_gb", "max_users", "monthly_credit_grant",
+		"description",
+	]
+
+	# Two queries rather than one with `or_filters`: Frappe ANDs or_filters onto
+	# filters rather than ORing the whole clause, so `is_active=1` plus
+	# `name=<current>` resolved to just the current plan and the page offered
+	# nothing to move to.
+	rows = frappe.get_all(
+		"Plan", filters={"is_active": 1}, fields=fields, order_by="sort_order asc"
+	)
+
+	# A workspace on a plan that has since been retired still has to see what it
+	# is on — a page that cannot tell you that is worse than one showing a plan
+	# nobody else can buy.
+	if tenant.plan and not any(row.name == tenant.plan for row in rows):
+		retired = frappe.get_all("Plan", filters={"name": tenant.plan}, fields=fields)
+		rows = retired + rows
+
+	# What this workspace is actually on may differ from what its plan says
+	# today, because the terms were captured when it was sold. The current card
+	# has to show the terms in force, not the price sheet.
+	in_force = quotas.for_tenant(tenant)
+
+	available = []
+	for row in rows:
+		current = row.name == tenant.plan
+		terms = in_force if current else {
+			field: row.get(field) for field in quotas.TERMS if field in row
+		}
+		available.append(
+			{
+				"code": row.name,
+				"name": row.plan_name,
+				"price_monthly": row.price_monthly,
+				"price_yearly": row.price_yearly,
+				"storage_gb": terms.get("storage_gb"),
+				"database_gb": terms.get("database_gb"),
+				"max_users": terms.get("max_users"),
+				"monthly_credit_grant": terms.get("monthly_credit_grant"),
+				"currency": row.currency,
+				"audience": row.audience,
+				"description": row.description,
+				"current": current,
+				# The same check the switch itself runs, so the page cannot offer
+				# a plan the switch would refuse — nor, more importantly, accept
+				# one the page would have refused.
+				# Named, not just refused: "storage" tells them what to clear.
+				"blocked_by": [] if current else quotas.blockers(tenant, terms),
+				# A plan whose terms differ from what this workspace holds is a
+				# plan they are grandfathered on. Saying so beats a card that
+				# quietly disagrees with the price sheet.
+				"grandfathered": current and _differs(in_force, row),
+			}
+		)
+
+	return {"current": tenant.plan, "plans": available, "usage": usage}
+
+
+def _differs(in_force: dict, row) -> bool:
+	return any(
+		(in_force.get(field) or 0) != (row.get(field) or 0)
+		for field in ("storage_gb", "database_gb", "max_users", "monthly_credit_grant")
+	)

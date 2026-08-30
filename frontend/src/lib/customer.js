@@ -14,6 +14,13 @@ export const customer = {
   buyCredits: (workspace, pack) => callMethod(method('buy_credits'), { workspace, pack }),
   buyStorage: (workspace, pack) => callMethod(method('buy_storage'), { workspace, pack }),
   billingPortal: (workspace) => callMethod(method('billing_portal'), { workspace }),
+  // Ours, not the Stripe portal: the portal cannot know our quotas, so it would
+  // sell a downgrade to a workspace already holding more than the smaller plan
+  // allows. See api/customer.change_plan.
+  changePlan: (workspace, plan, interval = 'Monthly') =>
+    callMethod(method('change_plan'), { workspace, plan, interval }, {
+      successMessage: 'Plan changed',
+    }),
 
   domainGuide: (workspace) => callMethod(method('domain_instructions'), { workspace }, { silent: true }),
   addDomain: (workspace, domain) =>
@@ -79,6 +86,54 @@ export function useOverview(workspaceRef) {
   return useResource(`oneapp_control.api.customer.overview`, {
     params: () => ({ workspace: workspaceRef.value }),
     refetch: true,
+    watch: ['Tenant'],
+  })
+}
+
+/**
+ * Who can sign in to a workspace.
+ *
+ * An invite is a row in the control plane; the workspace's site turns it into
+ * an account on its next sync, because nothing here can write into a tenant's
+ * database. The page says so rather than leaving someone wondering why their
+ * colleague cannot sign in yet.
+ */
+export function useMembers(workspaceRef) {
+  return useResource('oneapp_control.api.customer.members', {
+    params: () => ({ workspace: workspaceRef.value }),
+    refetch: true,
+    watch: ['Tenant'],
+  })
+}
+
+export const inviteMember = (workspace, payload) =>
+  callMethod('oneapp_control.api.customer.invite_member', { workspace, ...payload }, {
+    successMessage: 'Invited — they can sign in once the workspace next syncs',
+  })
+
+export const removeMember = (workspace, email) =>
+  callMethod('oneapp_control.api.customer.remove_member', { workspace, email }, {
+    successMessage: 'Removed',
+  })
+
+/** What this workspace can open — the same manifest its launcher renders. */
+export function useApps(workspaceRef) {
+  return useResource('oneapp_control.api.customer.apps', {
+    params: () => ({ workspace: workspaceRef.value }),
+    watch: ['App Entitlement'],
+  })
+}
+
+/**
+ * What the workspace is on and what else it could be on.
+ *
+ * Every plan carries every feature — they differ only in quotas — so the
+ * comparison is the numbers, and a plan too small for what is already stored
+ * comes back marked rather than merely listed.
+ */
+export function usePlans(workspaceRef) {
+  return useResource('oneapp_control.api.customer.plans', {
+    params: () => ({ workspace: workspaceRef.value }),
     watch: ['Tenant'],
   })
 }
