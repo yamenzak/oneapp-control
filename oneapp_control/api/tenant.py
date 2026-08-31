@@ -14,6 +14,7 @@ from frappe import _
 from oneapp_control.ai import catalogue, pricing
 from oneapp_control.credits import ledger
 from oneapp_control.entitlements import registry
+from oneapp_control.lifecycle import overage
 from oneapp_control.utils.signing import TENANT_HEADER, verify
 
 
@@ -74,7 +75,20 @@ def sync():
 			"database_quota_bytes": tenant.database_quota_bytes,
 			"max_users": tenant.max_users,
 			"background_workers": tenant.background_workers,
+			# How often this workspace copies itself into R2. The site owns the
+			# schedule because it owns the files; the plan owns the number.
+			"backups_per_day": int(tenant.terms.get("backups_per_day") or 0),
 		},
+		# Whether the site should enforce its quotas at all, and until when if
+		# not. A workspace over its limit because a line left its subscription
+		# did nothing wrong, and blocking it the moment Stripe dropped the line
+		# is the surprise this exists to prevent. See `lifecycle/overage.py`.
+		"quota": overage.state(tenant),
+		# One flag, and it is how the control plane asks for a final full backup
+		# before a workspace is archived. There is no channel from here into a
+		# tenant site — every wire runs the other way — so a request is something
+		# the site collects rather than something we deliver.
+		"backup": {"requested": bool(tenant.cold_copy_requested_on)},
 		"spaces": registry.spaces_for_tenant(tenant_name),
 		"modules": registry.entitled_modules(tenant_name),
 		"roles": registry.entitled_roles(tenant_name),
@@ -179,6 +193,12 @@ def report_usage():
 	# hourly and would be noise.
 	_maybe_warn(tenant)
 
+	# And reconcile the overage window. Here rather than in the sweep because
+	# this is the one place that sees what is held and what is allowed at the
+	# same moment — the sweep runs daily and would leave a workspace refused for
+	# up to a day before anybody told it why.
+	quota = overage.check(tenant)
+
 	return {
 		"storage_used_bytes": tenant.storage_used_bytes,
 		"storage_quota_bytes": tenant.storage_quota_bytes,
@@ -187,6 +207,7 @@ def report_usage():
 		"database_quota_bytes": tenant.database_quota_bytes,
 		"user_count": tenant.user_count,
 		"max_users": tenant.max_users,
+		"quota": quota,
 	}
 
 
@@ -211,6 +232,94 @@ def _maybe_warn(tenant):
 			frappe.cache().set_value(key, 1, expires_in_sec=7 * 24 * 3600)
 		elif fraction < WARN_FRACTION and warned:
 			frappe.cache().delete_value(key)
+
+
+@frappe.whitelist(allow_guest=True, methods=["POST"])
+def report_backup():
+	"""Take delivery of a backup result, good or bad.
+
+	Recorded on the tenant rather than only logged, because "when did this
+	workspace last have a restorable copy" is a question an operator has to be
+	able to answer per workspace and across the fleet at once. A failure clears
+	nothing — the last good backup stays the last good backup, and the error sits
+	beside it.
+	"""
+	tenant_name = _authenticate()
+	data = _body()
+
+	from oneapp_control.lifecycle import events
+
+	if data.get("ok"):
+		frappe.db.set_value(
+			"Tenant",
+			tenant_name,
+			{
+				"last_backup_on": frappe.utils.now_datetime(),
+				"last_backup_key": (data.get("key") or "")[:140],
+				"last_backup_bytes": float(data.get("bytes") or 0),
+				"last_backup_error": None,
+			},
+		)
+		events.record(
+			tenant_name,
+			"Backup Taken",
+			triggered_by="Tenant Site",
+			reason=data.get("key") or "",
+			detail={
+				"bytes": data.get("bytes"),
+				"with_files": data.get("with_files"),
+				"files": data.get("files"),
+			},
+		)
+
+		# This is the copy we asked for. Promote it now rather than waiting for
+		# tomorrow's sweep: a workspace held one rung short of suspension for a
+		# day because its backup landed an hour after the sweep is a day we are
+		# carrying somebody who has stopped paying.
+		promoted = _promote_if_requested(tenant_name, data)
+		return {"ok": True, **({"cold": promoted} if promoted else {})}
+
+	error = (data.get("error") or "Backup failed")[:1000]
+	frappe.db.set_value("Tenant", tenant_name, "last_backup_error", error)
+	events.record(
+		tenant_name, "Backup Failed", triggered_by="Tenant Site", reason=error
+	)
+	return {"ok": True, "recorded": "failure"}
+
+
+def _promote_if_requested(tenant_name: str, data: dict) -> dict | None:
+	"""Promote a just-reported backup to cold storage, if one was asked for.
+
+	Only a full backup will do. An intra-day database-only run carries no files
+	and restoring from it would silently produce a workspace with every record
+	and no attachments — which looks like it worked.
+	"""
+	tenant = frappe.get_doc("Tenant", tenant_name)
+	if not tenant.cold_copy_requested_on or tenant.cold_storage_key:
+		return None
+	if not data.get("with_files"):
+		return None
+
+	from oneapp_control.lifecycle import backups as backup_policy
+	from oneapp_control.lifecycle import cold
+
+	bucket = cold.bucket_for(tenant)
+	if not bucket:
+		return None
+
+	held = backup_policy.sets(bucket, tenant_name)
+	if not held:
+		return None
+
+	try:
+		return cold.promote(tenant, held[-1], bucket=bucket, triggered_by="Tenant Site")
+	except Exception:
+		# The backup itself arrived and is recorded. Failing the report because
+		# a copy between two prefixes failed would make the site take it again.
+		frappe.log_error(
+			title=f"Cold promotion failed for {tenant_name}", message=frappe.get_traceback()
+		)
+		return None
 
 
 @frappe.whitelist(allow_guest=True, methods=["POST"])
