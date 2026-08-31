@@ -1,18 +1,20 @@
 {
  "actions": [],
  "allow_rename": 1,
- "autoname": "field:plan_code",
+ "autoname": "field:addon_code",
  "creation": "2026-08-29 00:00:00.000000",
  "doctype": "DocType",
  "editable_grid": 1,
  "engine": "InnoDB",
  "field_order": [
-  "plan_code",
-  "plan_name",
-  "audience",
+  "addon_code",
+  "addon_name",
+  "kind",
+  "unit_gb",
+  "max_units",
   "is_active",
   "sort_order",
-  "cb_price",
+  "cb_addon_price",
   "currency",
   "price_monthly",
   "price_yearly",
@@ -20,43 +22,52 @@
   "stripe_price_id_monthly",
   "stripe_price_id_yearly",
   "sync_error",
-  "sec_quota",
-  "storage_gb",
-  "max_users",
-  "cb_quota",
-  "monthly_credit_grant",
-  "background_workers",
-  "database_gb",
-  "sec_press_plan",
-  "press_site_plan",
+  "sec_addon_copy",
   "description",
-  "sec_prices",
+  "sec_addon_prices",
   "prices"
  ],
  "fields": [
   {
-   "description": "Stable id, e.g. personal-starter",
-   "fieldname": "plan_code",
+   "description": "Stable id, e.g. storage-50",
+   "fieldname": "addon_code",
    "fieldtype": "Data",
-   "label": "Plan Code",
+   "label": "Addon Code",
    "reqd": 1,
    "unique": 1
   },
   {
-   "fieldname": "plan_name",
+   "fieldname": "addon_name",
    "fieldtype": "Data",
    "in_list_view": 1,
-   "label": "Plan Name",
+   "label": "Addon Name",
    "reqd": 1
   },
   {
-   "fieldname": "audience",
+   "description": "Which quota a unit of this adds to.",
+   "fieldname": "kind",
    "fieldtype": "Select",
    "in_list_view": 1,
    "in_standard_filter": 1,
-   "label": "Audience",
-   "options": "Personal\nCommercial",
+   "label": "Kind",
+   "options": "File Storage\nDatabase Storage",
    "reqd": 1
+  },
+  {
+   "default": "50",
+   "description": "How much one unit buys. Quantity multiplies it.",
+   "fieldname": "unit_gb",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "Unit GB",
+   "reqd": 1
+  },
+  {
+   "default": "0",
+   "description": "Most units one workspace may hold. Zero for no ceiling.",
+   "fieldname": "max_units",
+   "fieldtype": "Int",
+   "label": "Max Units"
   },
   {
    "default": "1",
@@ -71,7 +82,7 @@
    "label": "Sort Order"
   },
   {
-   "fieldname": "cb_price",
+   "fieldname": "cb_addon_price",
    "fieldtype": "Column Break"
   },
   {
@@ -112,78 +123,30 @@
    "read_only": 1
   },
   {
-   "description": "Why the last sync to Stripe did not finish. Saving again retries; the plan stays sellable on whatever prices it already has.",
+   "description": "Why the last sync to Stripe did not finish. Saving again retries; the add-on stays sellable on whatever prices it already has.",
    "fieldname": "sync_error",
    "fieldtype": "Small Text",
    "label": "Sync Error",
    "read_only": 1
   },
   {
-   "fieldname": "sec_quota",
-   "fieldtype": "Section Break",
-   "label": "Quotas"
-  },
-  {
-   "default": "10",
-   "description": "Hard cap enforced at upload.",
-   "fieldname": "storage_gb",
-   "fieldtype": "Int",
-   "label": "Storage Gb"
-  },
-  {
-   "default": "3",
-   "fieldname": "max_users",
-   "fieldtype": "Int",
-   "label": "Max Users"
-  },
-  {
-   "fieldname": "cb_quota",
-   "fieldtype": "Column Break"
-  },
-  {
-   "default": "0",
-   "description": "Non-rollover. Expires at the end of each billing period.",
-   "fieldname": "monthly_credit_grant",
-   "fieldtype": "Float",
-   "label": "Monthly Credit Grant"
-  },
-  {
-   "default": "1",
-   "description": "Concurrent background jobs. Caps what one workspace can take from a shared bench \u2014 the fleet cannot preempt, so it limits instead.",
-   "fieldname": "background_workers",
-   "fieldtype": "Int",
-   "label": "Background Workers"
-  },
-  {
-   "default": "2",
-   "description": "Database size cap. Separate from files: this is the one that constrains how many sites fit on a server.",
-   "fieldname": "database_gb",
-   "fieldtype": "Int",
-   "label": "Database Gb"
-  },
-  {
-   "fieldname": "sec_press_plan",
+   "fieldname": "sec_addon_copy",
    "fieldtype": "Section Break",
    "label": ""
   },
   {
-   "description": "Overrides the shard default when set.",
-   "fieldname": "press_site_plan",
-   "fieldtype": "Data",
-   "label": "Press Site Plan"
-  },
-  {
+   "description": "What a customer reads next to the price.",
    "fieldname": "description",
    "fieldtype": "Small Text",
    "label": "Description"
   },
   {
-   "fieldname": "sec_prices",
+   "fieldname": "sec_addon_prices",
    "fieldtype": "Section Break",
    "label": "Prices"
   },
   {
-   "description": "Every Stripe price this plan has had. Subscriptions sold on an older one keep billing on it.",
+   "description": "Every Stripe price this add-on has had. Subscriptions holding an older one keep billing on it.",
    "fieldname": "prices",
    "fieldtype": "Table",
    "label": "Prices",
@@ -196,7 +159,7 @@
  "modified": "2026-08-29 00:00:00.000000",
  "modified_by": "Administrator",
  "module": "Control Plane",
- "name": "Plan",
+ "name": "Add-on",
  "owner": "Administrator",
  "permissions": [
   {
@@ -216,6 +179,6 @@
  "sort_field": "modified",
  "sort_order": "DESC",
  "states": [],
- "title_field": "plan_name",
+ "title_field": "addon_name",
  "track_changes": 1
 }

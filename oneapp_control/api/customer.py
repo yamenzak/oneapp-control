@@ -18,16 +18,23 @@ import frappe
 from frappe import _
 
 from oneapp_control import portal
-from oneapp_control.billing import checkout, quotas, stripe_client
+from oneapp_control.billing import checkout
+from oneapp_control.billing import packs as pack_catalogue, quotas, stripe_client
 from oneapp_control.credits import ledger
 from oneapp_control.entitlements import registry
 
 
-def require_workspace(workspace: str):
+def require_workspace(workspace: str | None):
 	"""Resolve a workspace the caller owns, or refuse.
 
 	The single ownership check in the customer surface. Raises rather than
 	returning None so no caller can proceed on an empty result.
+
+	The workspace is optional in the signature of every endpoint that takes one,
+	so that *this* answers a missing one. A required parameter meant Frappe
+	raised a TypeError first — a 500 in the log on every load of a screen whose
+	resource fetches once before the workspace switcher has resolved, which is
+	the normal first render rather than a fault.
 	"""
 	user = frappe.session.user
 	if not user or user == "Guest":
@@ -65,7 +72,7 @@ def my_workspaces() -> list[dict]:
 
 
 @frappe.whitelist()
-def overview(workspace: str) -> dict:
+def overview(workspace: str | None = None) -> dict:
 	"""Everything the account page shows for one workspace, in one call."""
 	tenant = require_workspace(workspace)
 	plan = frappe.get_doc("Plan", tenant.plan) if tenant.plan else None
@@ -158,54 +165,108 @@ def invoices(workspace: str, limit: int = 24) -> list[dict]:
 	)
 
 
-# Packs live server-side so the amount charged is never client-supplied —
-# accepting both size and price would let anyone buy a million credits for a
-# penny.
-CREDIT_PACKS = [
-	{"code": "credits-1k", "credits": 1000, "amount": 10.0, "currency": "usd"},
-	{"code": "credits-5k", "credits": 5500, "amount": 50.0, "currency": "usd"},
-	{"code": "credits-12k", "credits": 12000, "amount": 100.0, "currency": "usd"},
-]
-
-# Storage is bought outright rather than drawn from credits: a large upload
-# silently draining the AI budget is a bill nobody can predict.
-STORAGE_PACKS = [
-	{"code": "storage-50", "gb": 50, "amount": 5.0, "currency": "usd"},
-	{"code": "storage-250", "gb": 250, "amount": 20.0, "currency": "usd"},
-	{"code": "storage-1000", "gb": 1000, "amount": 70.0, "currency": "usd"},
-]
-
-
 @frappe.whitelist()
 def packs() -> dict:
-	return {"credits": CREDIT_PACKS, "storage": STORAGE_PACKS}
+	"""What credit packs are for sale.
+
+	Read from the `Credit Pack` catalogue rather than a list in this file, so
+	changing a price is an edit an operator makes rather than a deploy. Storage
+	is not here any more: it is an add-on now, bought per month against the
+	subscription, and `addons()` below answers for it.
+	"""
+	return {"credits": pack_catalogue.offered()}
 
 
 @frappe.whitelist()
-def buy_credits(workspace: str, pack: str) -> dict:
+def buy_credits(workspace: str, pack: str, code: str | None = None) -> dict:
+	"""Start checkout for a pack, named by code.
+
+	The code and nothing else. What it costs is looked up server-side, because
+	accepting an amount from the caller would let anyone buy a million credits
+	for a penny.
+	"""
 	tenant = require_workspace(workspace)
-	chosen = next((p for p in CREDIT_PACKS if p["code"] == pack), None)
-	if not chosen:
-		frappe.throw(_("Unknown credit pack."))
-
-	return checkout.start_credit_pack(
-		tenant.name,
-		credits=chosen["credits"],
-		amount=chosen["amount"],
-		currency=chosen["currency"],
-	)
+	return checkout.start_credit_pack(tenant.name, pack, code)
 
 
-@frappe.whitelist()
-def buy_storage(workspace: str, pack: str) -> dict:
+@frappe.whitelist(methods=["GET"])
+def addons(workspace: str | None = None) -> dict:
+	"""What extra quota is for sale, and how much of it this workspace holds.
+
+	Both together rather than two calls: a stepper needs the catalogue and the
+	current quantity in the same render, and fetching them separately is how one
+	arrives a frame after the other and the control jumps.
+
+	Priced at the cadence this workspace bills on. Stripe requires every
+	recurring line on one subscription to share an interval, so an add-on with no
+	price at that cadence is genuinely not available here — reported as such
+	rather than silently dropped, because "where did it go" is a support ticket.
+	"""
 	tenant = require_workspace(workspace)
-	chosen = next((p for p in STORAGE_PACKS if p["code"] == pack), None)
-	if not chosen:
-		frappe.throw(_("Unknown storage pack."))
+	interval = (
+		frappe.db.get_value("Subscription", tenant.subscription, "interval")
+		if tenant.subscription
+		else None
+	) or "Monthly"
 
-	return checkout.start_storage_pack(
-		tenant.name, gb=chosen["gb"], amount=chosen["amount"], currency=chosen["currency"]
-	)
+	held = {
+		row["addon"]: row
+		for row in (
+			frappe.get_all(
+				"Subscription Add-on",
+				filters={"parent": tenant.subscription, "parenttype": "Subscription"},
+				fields=["addon", "quantity", "unit_gb", "unit_amount", "currency"],
+			)
+			if tenant.subscription
+			else []
+		)
+	}
+
+	offered = []
+	for row in frappe.get_all(
+		"Add-on",
+		filters={"is_active": 1},
+		fields=["name", "addon_name", "kind", "unit_gb", "max_units", "currency",
+		        "price_monthly", "price_yearly", "description",
+		        "stripe_price_id_monthly", "stripe_price_id_yearly"],
+		order_by="sort_order asc, addon_name asc",
+	):
+		mine = held.get(row["name"])
+		price = row["price_yearly"] if interval == "Yearly" else row["price_monthly"]
+		offered.append({
+			"code": row["name"],
+			"name": row["addon_name"],
+			"kind": row["kind"],
+			"unit_gb": row["unit_gb"],
+			"max_units": row["max_units"],
+			"currency": row["currency"],
+			"amount": price,
+			"description": row["description"],
+			"quantity": int(mine["quantity"]) if mine else 0,
+			# What they are actually paying per unit, which is not the catalogue
+			# price once a rate has been grandfathered.
+			"held_amount": mine["unit_amount"] if mine else None,
+			"held_unit_gb": mine["unit_gb"] if mine else None,
+			"available": bool(
+				row["stripe_price_id_yearly" if interval == "Yearly" else "stripe_price_id_monthly"]
+			),
+		})
+
+	return {
+		"interval": interval,
+		"addons": offered,
+		# Nothing to hang a line from. The page says so rather than offering
+		# controls that would refuse.
+		"can_buy": bool(tenant.subscription),
+	}
+
+
+@frappe.whitelist(methods=["POST"])
+def set_addon(workspace: str, addon: str, quantity: int,
+              code: str | None = None) -> dict:
+	"""Hold this many units. Zero releases it."""
+	tenant = require_workspace(workspace)
+	return checkout.set_addon_quantity(tenant.name, addon, quantity, code)
 
 
 @frappe.whitelist()
@@ -226,7 +287,7 @@ def billing_portal(workspace: str) -> dict:
 
 
 @frappe.whitelist()
-def domain_instructions(workspace: str) -> dict:
+def domain_instructions(workspace: str | None = None) -> dict:
 	"""What the customer has to do in their own DNS, and how it is going.
 
 	Written out rather than linked because the two ways this fails — a proxied
@@ -327,7 +388,7 @@ def _seats(tenant) -> dict:
 
 
 @frappe.whitelist(methods=["GET"])
-def members(workspace: str) -> dict:
+def members(workspace: str | None = None) -> dict:
 	"""Everyone who can sign in to the workspace, the owner first."""
 	tenant = require_workspace(workspace)
 
@@ -445,7 +506,7 @@ def remove_member(workspace: str, email: str) -> dict:
 # --------------------------------------------------------------------------- #
 
 @frappe.whitelist(methods=["GET"])
-def apps(workspace: str) -> dict:
+def apps(workspace: str | None = None) -> dict:
 	"""The apps this workspace can open.
 
 	The same manifest the launcher renders, so a customer looking at their
@@ -494,7 +555,7 @@ def change_plan(workspace: str, plan: str, interval: str = "Monthly") -> dict:
 
 
 @frappe.whitelist(methods=["GET"])
-def plans(workspace: str) -> dict:
+def plans(workspace: str | None = None) -> dict:
 	"""What this workspace is on, and what else it could be on.
 
 	Every plan carries every feature — they differ only in quotas, which is why
