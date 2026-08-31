@@ -83,14 +83,14 @@ def shards() -> list:
 @frappe.whitelist()
 def tenant_apps(tenant: str) -> list:
 	_require_manager()
-	return registry.apps_for_tenant(tenant)
+	return registry.spaces_for_tenant(tenant)
 
 
 @frappe.whitelist(methods=["GET"])
 def tenant_app_access(tenant: str) -> list:
 	"""Every app, and whether this workspace has it.
 
-	`apps_for_tenant` answers the launcher's question — what to render — so it
+	`spaces_for_tenant` answers the launcher's question — what to render — so it
 	returns only what the tenant already has. An operator deciding what to grant
 	needs the other half: the restricted apps this workspace does *not* have are
 	the only ones there is anything to do about, and they are invisible in a list
@@ -100,34 +100,34 @@ def tenant_app_access(tenant: str) -> list:
 	entitled = {
 		row.app
 		for row in frappe.get_all(
-			"App Entitlement", filters={"tenant": tenant, "enabled": 1}, fields=["app"]
+			"Space Entitlement", filters={"tenant": tenant, "enabled": 1}, fields=["app"]
 		)
 	}
 
 	apps = frappe.get_all(
-		"OneApp App",
+		"OneSpace Space",
 		filters={"is_active": 1},
-		fields=["name as app_code", "app_label", "module", "availability", "icon",
+		fields=["name as space_code", "space_label", "module", "availability", "icon",
 		        "sort_order", "description"],
-		order_by="sort_order asc, app_label asc",
+		order_by="sort_order asc, space_label asc",
 	)
 	for app in apps:
 		app["entitled"] = (
-			app.availability != "Restricted" or app.app_code in entitled
+			app.availability != "Restricted" or app.space_code in entitled
 		)
 	return apps
 
 
 @frappe.whitelist()
-def grant_app(tenant: str, app_code: str, note: str | None = None) -> str:
+def grant_app(tenant: str, space_code: str, note: str | None = None) -> str:
 	_require_manager()
-	return registry.grant(tenant, app_code, note)
+	return registry.grant(tenant, space_code, note)
 
 
 @frappe.whitelist()
-def revoke_app(tenant: str, app_code: str):
+def revoke_app(tenant: str, space_code: str):
 	_require_manager()
-	registry.revoke(tenant, app_code)
+	registry.revoke(tenant, space_code)
 	return {"ok": True}
 
 
@@ -241,7 +241,7 @@ def press_capacity() -> dict:
 		"regions": frappe.get_all(
 			"Region", filters={"is_active": 1}, fields=["name", "region_name"], order_by="sort_order"
 		),
-		"tenant_domain": frappe.db.get_single_value("OneApp Control Settings", "tenant_domain"),
+		"tenant_domain": frappe.db.get_single_value("OneSpace Control Settings", "tenant_domain"),
 		# So the form can grey out pairs that already have a shard rather than
 		# letting one be created twice.
 		"existing": [[r.press_server, r.press_release_group] for r in taken],
@@ -526,8 +526,11 @@ def site_state(tenant: str) -> dict:
 	if not site:
 		return {"site": None, "reason": "This tenant has no site yet."}
 
-	client = _press()
-	facts, error = _degrade(lambda: client.get_site(site), {})
+	# The client inside the lambda, like every other read here. Built outside it,
+	# a control plane with no press credentials raised while *constructing* the
+	# client — before `_degrade` could turn that into a reason — so the one panel
+	# that exists to say what is wrong with a site was the one that 500'd.
+	facts, error = _degrade(lambda: _press().get_site(site), {})
 
 	# Field names read off a real response rather than guessed: press returns
 	# `group` for the bench, `server` for the machine, `frappe_version` for the
@@ -553,7 +556,7 @@ def site_state(tenant: str) -> dict:
 		"site_migration": facts.get("site_migration"),
 		"version_upgrade": facts.get("version_upgrade"),
 		"archive_failed": bool(facts.get("archive_failed")),
-		# What the control plane believes, beside it. Two views of one site is
+		# What the control plane believes, beside it. Two screens of one site is
 		# the point: a disagreement here is the bug an operator is looking for.
 		"control_plane": {
 			"status": doc.status,
@@ -760,8 +763,8 @@ def support_logins(tenant: str, limit: int = 20) -> list:
 #
 # Everything below exists because the desk is not part of this product
 # (DECISIONS §7). A record an operator can only reach through /app is a record
-# only someone who knows Frappe can reach, and the whole point of OneAdmin is
-# that running this does not require that.
+# only someone who knows Frappe can reach, and the whole point of the operator
+# console is that running this does not require that.
 # --------------------------------------------------------------------------- #
 
 @frappe.whitelist(methods=["GET"])
@@ -865,7 +868,7 @@ def standby_pool() -> list:
 def tenant_billing(tenant: str) -> dict:
 	"""What a workspace is on, and on whose terms.
 
-	The operator's view of the thing the customer sees on their plan page — plus
+	The operator's screen of the thing the customer sees on their plan page — plus
 	the one fact the customer's page cannot show them: whether the terms they
 	hold still match the plan as it stands.
 	"""
@@ -915,6 +918,47 @@ def _credit_summary(tenant: str) -> dict:
 
 
 @frappe.whitelist(methods=["POST"])
+def grant_credits(tenant: str, credits: float, reason: str) -> dict:
+	"""Put credits on a workspace by hand.
+
+	Nothing else in the system can. Credits arrive from a paid invoice or a
+	purchased pack, and both are Stripe telling us something happened — so a
+	goodwill credit, a migration allowance or a demo top-up had no path at all
+	and would have meant opening the desk, which this product does not do
+	(DECISIONS §7).
+
+	A reason is required and lands on the ledger row. The ledger is append-only
+	and an entry with no explanation is one nobody can audit six months later;
+	this is the one entry type a person creates, so it is the one that most needs
+	saying why.
+
+	Posted as `Adjustment` rather than `Grant`: a Grant is what a plan gives and
+	expires at the period end, and this should not quietly evaporate. It never
+	expires, so it is spent after everything else — `open_grants` orders
+	never-expiring last — which is the right order for something given away.
+	"""
+	_require_manager()
+	from oneapp_control.credits import ledger
+
+	amount = float(credits or 0)
+	if not amount:
+		frappe.throw(_("Nothing to grant."))
+	if not (reason or "").strip():
+		frappe.throw(_("Say why. It goes on the ledger and somebody will read it."))
+
+	entry = ledger.post_entry(
+		tenant=tenant,
+		entry_type="Adjustment",
+		credits=amount,
+		expires_on=None,
+		source_doctype="User",
+		source_name=frappe.session.user,
+		remarks=f"{reason.strip()} — by {frappe.session.user}",
+	)
+	return {"entry": entry.name if hasattr(entry, "name") else None, "credits": amount}
+
+
+@frappe.whitelist(methods=["POST"])
 def adopt_plan_terms(tenant: str) -> dict:
 	"""Move a workspace onto its plan's terms as they stand now.
 
@@ -945,3 +989,569 @@ def set_tenant_plan(tenant: str, plan: str, interval: str = "Monthly") -> dict:
 	from oneapp_control.billing import checkout
 
 	return checkout.change_plan(tenant, plan, interval)
+
+
+# --------------------------------------------------------------------------- #
+# AI: the model catalogue, the feature registry, and what tenants spent
+#
+# All of it operable from the console. There is no desk (DECISIONS §7), so a model
+# that can only be re-priced by editing a doctype is a model nobody re-prices.
+# --------------------------------------------------------------------------- #
+
+AI_MODEL_EDITABLE = ("status", "capability", "is_recommended", "markup_override",
+                     "display_name", "description")
+
+
+@frappe.whitelist(methods=["GET"])
+def ai_models(capability: str | None = None, provider: str | None = None,
+              status: str | None = None) -> list:
+	_require_manager()
+
+	filters = {}
+	for field, value in (("capability", capability), ("provider", provider),
+	                     ("status", status)):
+		if value:
+			filters[field] = value
+
+	models = frappe.get_all(
+		"AI Model",
+		filters=filters,
+		fields=[
+			"name", "display_name", "provider", "model_id", "capability", "status",
+			"input_modalities", "output_modalities", "context_window",
+			"max_output_tokens", "supports_tools", "supports_reasoning",
+			"is_recommended", "markup_override", "source", "last_synced",
+			"deprecation_date", "sync_note", "description",
+		],
+		order_by="provider asc, capability asc, display_name asc",
+	)
+
+	# The rate matters more than any other field here: it is the number a markup
+	# is applied to, and the one that moves without anyone being told.
+	for model in models:
+		model["prices"] = frappe.get_all(
+			"AI Model Price",
+			filters={"parent": model["name"]},
+			fields=["kind", "modality", "unit", "cost_usd", "per_units", "tier",
+			        "effective_from", "effective_to", "note"],
+			order_by="tier asc, idx asc",
+		)
+	return models
+
+
+@frappe.whitelist(methods=["POST"])
+def sync_ai_models() -> dict:
+	"""Refetch models and prices now, rather than waiting for the nightly run."""
+	_require_manager()
+
+	from oneapp_control.ai import catalogue
+
+	return catalogue.sync()
+
+
+@frappe.whitelist(methods=["POST"])
+def update_ai_model(model: str, values: str | dict) -> dict:
+	"""Change the commercial facts about a model. Not the technical ones.
+
+	Prices, modalities and limits come from the provider and are overwritten on
+	the next sync, so letting an operator edit them would be a control that
+	silently stops working. What is genuinely ours — whether to sell it, what to
+	charge on top, what to call it — is what this writes.
+	"""
+	_require_manager()
+
+	if isinstance(values, str):
+		values = frappe.parse_json(values)
+
+	updates = {k: v for k, v in (values or {}).items() if k in AI_MODEL_EDITABLE}
+	if not updates:
+		frappe.throw(_("Nothing to change. Prices come from the provider."))
+
+	doc = frappe.get_doc("AI Model", model)
+	doc.update(updates)
+	doc.save(ignore_permissions=True)
+	frappe.db.commit()
+	return {"ok": True, "model": model, "status": doc.status}
+
+
+@frappe.whitelist(methods=["GET"])
+def ai_features() -> list:
+	"""Every feature the fleet's apps declare, as reported by tenant sites."""
+	_require_manager()
+
+	return frappe.get_all(
+		"AI Feature",
+		fields=[
+			"name", "label", "app", "capability", "status", "tenant_can_disable",
+			"allow_prompt_addendum", "default_model", "max_input_tokens",
+			"max_output_tokens", "max_images", "max_outputs", "max_audio_seconds",
+			"max_credits",
+			"description", "last_seen",
+		],
+		order_by="app asc, label asc",
+	)
+
+
+AI_FEATURE_EDITABLE = ("status", "default_model", "max_input_tokens",
+                       "max_output_tokens", "max_images", "max_outputs",
+                       "max_audio_seconds", "max_credits")
+
+
+@frappe.whitelist(methods=["POST"])
+def update_ai_feature(feature: str, values: str | dict) -> dict:
+	"""Pin a model, tighten a ceiling, or take a feature off the air.
+
+	`tenant_can_disable` is absent from the editable set on purpose: whether a
+	workflow can run without AI is a property of the code, declared by the app
+	that has to keep working, and an operator flipping it here would be
+	overruling the only thing that knows.
+	"""
+	_require_manager()
+
+	if isinstance(values, str):
+		values = frappe.parse_json(values)
+
+	updates = {k: v for k, v in (values or {}).items() if k in AI_FEATURE_EDITABLE}
+	if not updates:
+		frappe.throw(_("Nothing to change."))
+
+	doc = frappe.get_doc("AI Feature", feature)
+	doc.update(updates)
+	doc.save(ignore_permissions=True)
+	frappe.db.commit()
+	return {"ok": True, "feature": feature, "status": doc.status}
+
+
+@frappe.whitelist(methods=["GET"])
+def ai_usage(tenant: str | None = None, limit: int = 50) -> list:
+	"""Recent calls, with the gateway's verdict where it has arrived."""
+	_require_manager()
+
+	return frappe.get_all(
+		"AI Usage Record",
+		filters={"tenant": tenant} if tenant else {},
+		fields=["name", "tenant", "feature", "model", "provider", "credits_charged",
+		        "cost_usd", "markup", "cached", "gateway_log_id",
+		        "gateway_cost_usd", "reconciled_on", "recon_note", "creation"],
+		order_by="creation desc",
+		limit=min(int(limit or 50), 200),
+	)
+
+
+@frappe.whitelist(methods=["GET"])
+def ai_settings() -> dict:
+	"""The gateway's own configuration, and how fresh the catalogue is."""
+	_require_manager()
+
+	conf = frappe.get_single("OneSpace Control Settings")
+	return {
+		"cf_account_id": conf.cf_account_id,
+		"ai_gateway": conf.ai_gateway,
+		"markup": conf.ai_markup_multiplier,
+		"synced_on": conf.ai_catalogue_synced_on,
+		"note": conf.ai_catalogue_note,
+		# Configured means a sync can run at all. Said plainly because the
+		# alternative is an empty catalogue with no explanation.
+		"has_cloudflare": bool(conf.cf_account_id
+		                       and conf.get_password("cf_api_token", raise_exception=False)),
+		"has_google": bool(conf.get_password("google_ai_key", raise_exception=False)),
+		# Counted in Python rather than grouped in SQL: frappe.get_all rejects
+		# an aggregate written as a string, and the catalogue is a few hundred
+		# rows at most.
+		"counts": _tally(frappe.get_all("AI Model", pluck="status")),
+	}
+
+
+def _tally(values) -> dict:
+	counts: dict[str, int] = {}
+	for value in values:
+		counts[value] = counts.get(value, 0) + 1
+	return counts
+
+
+@frappe.whitelist(methods=["POST"])
+def set_ai_markup(markup: float) -> dict:
+	"""The multiplier applied to every model that does not override it."""
+	_require_manager()
+
+	markup = float(markup)
+	if markup <= 0:
+		frappe.throw(_("Markup must be greater than zero."))
+
+	frappe.db.set_single_value("OneSpace Control Settings", "ai_markup_multiplier", markup)
+	frappe.db.commit()
+	return {"ok": True, "markup": markup}
+
+
+@frappe.whitelist(methods=["POST"])
+def reconcile_ai_usage() -> dict:
+	"""Run the comparison against the gateway's logs now."""
+	_require_manager()
+
+	from oneapp_control.ai import reconcile
+
+	return reconcile.run()
+
+
+# --------------------------------------------------------------------------- #
+# App screens
+#
+# An app is configuration before it is code: a screen names a doctype and the
+# fields worth showing, and OneSpace renders it from the tenant site's own
+# metadata. So this is where an app gets built, and it has to be reachable
+# without the desk like everything else.
+# --------------------------------------------------------------------------- #
+
+APP_VIEW_FIELDS = ("screen", "label", "icon", "document_type", "fields",
+                   "component", "filters", "order_by")
+
+
+@frappe.whitelist(methods=["GET"])
+def app_views(app: str) -> list:
+	_require_manager()
+
+	return frappe.get_all(
+		"OneSpace Space Screen",
+		filters={"parent": app, "parenttype": "OneSpace Space"},
+		fields=["name", *APP_VIEW_FIELDS, "idx"],
+		order_by="idx asc",
+	)
+
+
+@frappe.whitelist(methods=["POST"])
+def set_app_views(app: str, screens: str | list) -> dict:
+	"""Replace an app's screens with what was sent.
+
+	Replaced rather than patched: the order of these is the order of the app's
+	navigation, so a partial update would need a second way to express it.
+	"""
+	_require_manager()
+
+	if isinstance(screens, str):
+		screens = frappe.parse_json(screens)
+	if not isinstance(screens, list):
+		frappe.throw(_("Expected a list of screens."))
+
+	slugs = [str(row.get("screen") or "").strip() for row in screens]
+	if not all(slugs):
+		frappe.throw(_("Every screen needs a slug — it is what a bookmark points at."))
+	if len(set(slugs)) != len(slugs):
+		frappe.throw(_("Two screens share a slug, so one of them is unreachable."))
+
+	doc = frappe.get_doc("OneSpace Space", app)
+	doc.set("screens", [
+		{field: row.get(field) for field in APP_VIEW_FIELDS} for row in screens
+	])
+	doc.save(ignore_permissions=True)
+	frappe.db.commit()
+
+	return {"ok": True, "screens": len(screens)}
+
+
+# --------------------------------------------------------------------------- #
+# Lifecycle
+# --------------------------------------------------------------------------- #
+# The ladder runs on a timer and destroys data at the end of it, so an operator
+# needs four things it cannot get from editing a field: a way to stop it, a way
+# to run it now on one workspace, a way to take a copy on demand, and a way to
+# bring one back. All four are here rather than on a form, because each is a
+# decision with a consequence and the confirmation text is part of it.
+
+@frappe.whitelist(methods=["POST"])
+def hold_lifecycle(tenant: str) -> dict:
+	"""Freeze a workspace out of the ladder entirely.
+
+	A demo instance, a billing dispute, a legal hold, an account somebody is
+	mid-conversation with. Nothing is suspended, archived or purged while this
+	is set, and the clock keeps whatever value it had — releasing the hold
+	resumes from the same rung rather than starting over.
+	"""
+	_require_manager()
+	from oneapp_control.lifecycle import events
+
+	doc = frappe.get_doc("Tenant", tenant)
+	if doc.lifecycle_hold:
+		return {"ok": True, "tenant": tenant, "held": True, "already": True}
+
+	doc.db_set("lifecycle_hold", 1)
+	events.record(
+		tenant,
+		"Held",
+		triggered_by="Operator",
+		reason=f"Held by {frappe.session.user}.",
+	)
+	return {"ok": True, "tenant": tenant, "held": True}
+
+
+@frappe.whitelist(methods=["POST"])
+def release_lifecycle(tenant: str) -> dict:
+	"""Put a held workspace back on the ladder.
+
+	It resumes at whatever rung its dates say it is on, which may be several
+	rungs further down than when it was held — the clock did not stop, the
+	consequences did. The next sweep will act on that, so this is worth doing
+	deliberately rather than as tidying.
+	"""
+	_require_manager()
+	from oneapp_control.lifecycle import events
+
+	doc = frappe.get_doc("Tenant", tenant)
+	doc.db_set("lifecycle_hold", 0)
+	events.record(
+		tenant,
+		"Released",
+		triggered_by="Operator",
+		reason=f"Released by {frappe.session.user}.",
+	)
+	return {"ok": True, "tenant": tenant, "held": False}
+
+
+@frappe.whitelist(methods=["POST"])
+def run_lifecycle(tenant: str) -> dict:
+	"""Apply the ladder to one workspace now, rather than at tomorrow's sweep.
+
+	How a policy change is tested: widen a window, run this, read the event log.
+	It takes exactly the path the scheduled sweep takes, including every refusal,
+	so what happens here is what would have happened anyway.
+	"""
+	_require_manager()
+	from oneapp_control.lifecycle import sweep
+
+	return {"ok": True, "tenant": tenant, "did": sweep.consider(tenant)}
+
+
+@frappe.whitelist(methods=["POST"])
+def take_cold_copy(tenant: str) -> dict:
+	"""Promote a backup to cold storage now.
+
+	Before a migration, before an upgrade somebody is nervous about, or to
+	unstick a workspace the ladder refused to archive. If the newest rolling
+	backup is stale this asks the site for a fresh one instead, and the site
+	answers on its next sync rather than immediately.
+	"""
+	_require_manager()
+	from oneapp_control.lifecycle import cold
+
+	return cold.ensure(tenant, triggered_by="Operator")
+
+
+@frappe.whitelist(methods=["POST"])
+def restore_from_cold(tenant: str) -> dict:
+	"""Rebuild an archived workspace from its cold copy.
+
+	Normally this happens on its own the moment somebody pays. This is the
+	manual door: a customer who paid by transfer, a workspace archived by
+	mistake, a restore rehearsal.
+	"""
+	_require_manager()
+	from oneapp_control.provisioning import runner
+
+	doc = frappe.get_doc("Tenant", tenant)
+	if not doc.cold_storage_key:
+		frappe.throw(
+			_("{0} has no cold copy. There is nothing to restore from.").format(tenant)
+		)
+	if doc.status not in ("Archived", "Failed"):
+		frappe.throw(
+			_("{0} is {1}. A restore replaces the site's database, so it is only "
+			  "offered for a workspace that no longer has one.").format(tenant, doc.status)
+		)
+
+	job = runner.enqueue(
+		tenant,
+		"Restore Site",
+		{"cold_storage_key": doc.cold_storage_key},
+		idempotency_key=f"restore:{tenant}:{doc.cold_storage_key}",
+	)
+	return {"ok": True, "tenant": tenant, "job": job.name}
+
+
+@frappe.whitelist(methods=["POST"])
+def purge_tenant(tenant: str) -> dict:
+	"""Delete every object a workspace owns. Irreversible, and it says so.
+
+	The sweep does this on its own once every window and warning has passed.
+	This is for the cases a timer should not decide: a deletion request under
+	data-protection law, or an operator who knows the retention is pointless.
+
+	Refuses on a workspace that still has a site. Purging one of those would
+	delete the backups of a workspace that is still running, which is not what
+	anybody means by this word.
+	"""
+	_require_manager()
+	from oneapp_control.lifecycle import cold
+
+	doc = frappe.get_doc("Tenant", tenant)
+	if doc.status not in ("Archived", "Purged"):
+		frappe.throw(
+			_("{0} is {1}. Archive it first — purging a workspace that still has "
+			  "a site would delete the backups of something that is running.")
+			.format(tenant, doc.status)
+		)
+
+	result = cold.purge(
+		doc,
+		triggered_by="Operator",
+		reason=f"Purged by {frappe.session.user}.",
+	)
+	doc.db_set({"status": "Purged", "dunning_stage": "Purged"})
+	return result
+
+
+@frappe.whitelist(methods=["GET"])
+def tenant_lifecycle(tenant: str) -> dict:
+	"""Where a workspace stands on the ladder, and what got it there.
+
+	Four things that live in four different places, gathered because an operator
+	asking "why is this suspended" needs all four at once: the clock and its
+	dates, the copy we hold, the backups arriving from the site, and the log of
+	what the sweep actually did.
+
+	Read-only, and it deliberately does not consult R2 — listing a prefix is a
+	network call per workspace, and this is opened to answer a question about
+	dates. The sizes are the ones recorded when the copy was taken.
+	"""
+	_require_manager()
+	from oneapp_control.lifecycle import overage, policy
+
+	doc = frappe.get_doc("Tenant", tenant)
+	windows = policy.windows()
+
+	return {
+		"tenant": tenant,
+		"status": doc.status,
+		"windows": windows,
+		"ladder": {
+			"stage": doc.dunning_stage,
+			"started_on": str(doc.dunning_started_on) if doc.dunning_started_on else None,
+			"held": bool(doc.lifecycle_hold),
+			"suspended_on": str(doc.suspended_on) if doc.suspended_on else None,
+			"suspended_reason": doc.suspended_reason,
+			"archived_on": str(doc.archived_on) if doc.archived_on else None,
+			"purge_after": str(doc.purge_after) if doc.purge_after else None,
+			"purge_warned_on": str(doc.purge_warned_on) if doc.purge_warned_on else None,
+			"purged_on": str(doc.purged_on) if doc.purged_on else None,
+			"restored_on": str(doc.restored_on) if doc.restored_on else None,
+		},
+		"cold": {
+			"key": doc.cold_storage_key,
+			"stored_on": str(doc.cold_stored_on) if doc.cold_stored_on else None,
+			"bytes": doc.cold_storage_bytes or 0,
+			"requested_on": (
+				str(doc.cold_copy_requested_on) if doc.cold_copy_requested_on else None
+			),
+		},
+		"backup": {
+			"last_on": str(doc.last_backup_on) if doc.last_backup_on else None,
+			"key": doc.last_backup_key,
+			"bytes": doc.last_backup_bytes or 0,
+			"error": doc.last_backup_error,
+			"per_day": int(doc.terms.get("backups_per_day") or 0),
+			"retention_days": int(doc.terms.get("backup_retention_days") or 0),
+		},
+		"quota": overage.state(doc),
+		"events": frappe.get_all(
+			"Tenant Lifecycle Event",
+			filters={"tenant": tenant},
+			fields=["name", "event", "occurred_on", "triggered_by", "reason",
+			        "from_status", "to_status"],
+			order_by="occurred_on desc, creation desc",
+			limit=30,
+		),
+	}
+
+
+# The lifecycle's windows have floors — `cold_retention_days` will not go below
+# seven, on purpose — so the shortest honest walk from a failed payment to a
+# purge is about nine days. That is right for production and useless for a
+# rehearsal, and a rehearsal is the only way to find out whether a restore
+# actually works before a customer needs one.
+#
+# So the clock moves instead of the windows. Every lifecycle date on the
+# workspace shifts back by the days given, and the next `run_lifecycle` sees it
+# further down the ladder — with every window, warning and refusal exactly as
+# they are in production, which is the point. Nothing about the rules is
+# loosened; only the calendar is.
+LIFECYCLE_DATES = (
+	"dunning_started_on",
+	"suspended_on",
+	"archived_on",
+	"purge_after",
+	"purge_warned_on",
+	"over_quota_since",
+	"cold_stored_on",
+	"cold_copy_requested_on",
+	"last_backup_on",
+	"trial_ends_on",
+)
+
+
+@frappe.whitelist(methods=["POST"])
+def advance_lifecycle_clock(tenant: str, days: int) -> dict:
+	"""Age a workspace's lifecycle by `days`, for a rehearsal.
+
+	**Refuses on a Production tenant.** `Tenant.environment` is inherited from
+	the shard rather than chosen per tenant, so this cannot be pointed at a
+	customer by editing the workspace — somebody would have to move it onto a
+	staging shard first, which is a deliberate act and a visible one.
+
+	Deliberately not a button in the console. A control that fast-forwards a
+	deletion has no business sitting in a row of ordinary actions where somebody
+	can reach it while meaning to click the one above; it is called from the
+	rehearsal in docs/RUNBOOK.md and nowhere else.
+	"""
+	_require_manager()
+	from frappe.utils import add_to_date, getdate
+
+	from oneapp_control.lifecycle import events
+
+	days = int(days)
+	if days <= 0:
+		frappe.throw(_("Give a positive number of days to age the workspace by."))
+
+	doc = frappe.get_doc("Tenant", tenant)
+	if doc.environment == "Production":
+		frappe.throw(
+			_(
+				"{0} is a Production workspace. Ageing its clock would suspend, "
+				"archive and eventually delete somebody's live business several "
+				"days early. Rehearse on a staging shard."
+			).format(tenant),
+			frappe.PermissionError,
+		)
+
+	moved = {}
+	for field in LIFECYCLE_DATES:
+		value = doc.get(field)
+		if not value:
+			continue
+		# Dates and datetimes both, and `add_to_date` keeps whichever it was
+		# given — a Datetime field written as a date reads as midnight, which
+		# is a day's drift on a window measured in days.
+		moved[field] = add_to_date(value, days=-days)
+
+	if moved:
+		doc.db_set(moved)
+
+	events.record(
+		tenant,
+		"Held" if doc.lifecycle_hold else "Dunning Started",
+		triggered_by="Operator",
+		reason=(
+			f"Rehearsal: {frappe.session.user} aged this workspace's lifecycle "
+			f"by {days} days. Not a real transition."
+		),
+		detail={"rehearsal": True, "days": days, "moved": {k: str(v) for k, v in moved.items()}},
+	)
+
+	return {
+		"ok": True,
+		"tenant": tenant,
+		"days": days,
+		"moved": {k: str(v) for k, v in moved.items()},
+		"now": {
+			"status": doc.status,
+			"dunning_started_on": str(doc.dunning_started_on or ""),
+			"purge_after": str(doc.purge_after or ""),
+		},
+	}

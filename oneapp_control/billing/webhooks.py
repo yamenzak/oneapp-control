@@ -101,7 +101,7 @@ def stripe():
 
 
 def verify_signature(payload: str, header: str | None):
-	secret = frappe.get_single("OneApp Control Settings").get_password(
+	secret = frappe.get_single("OneSpace Control Settings").get_password(
 		"stripe_webhook_secret", raise_exception=False
 	)
 	if not secret:
@@ -162,6 +162,9 @@ def handle_checkout_completed(obj: dict, record):
 	meta = obj.get("metadata") or {}
 
 	if meta.get("kind") == "storage_pack":
+		# Storage is an add-on now — bought per month on the subscription rather
+		# than outright. This stays because a session opened before the change
+		# can still be paid for afterwards, and the money has arrived either way.
 		if obj.get("payment_status") != "paid":
 			return
 		grant_storage_pack(tenant, int(meta.get("storage_gb") or 0), obj)
@@ -244,6 +247,9 @@ def handle_subscription_change(obj: dict, record):
 	# Without this, an upgrade billed at the new price and left the workspace on
 	# the old storage, seats, credit grant and site plan.
 	_reconcile_plan(obj, subscription)
+	# After the plan, because both write the subscription and the plan's capture
+	# is what the add-ons are added on top of.
+	_reconcile_addons(obj, subscription)
 
 	status = STRIPE_STATUS_MAP.get(obj.get("status"), "Incomplete")
 	subscription.db_set("status", status)
@@ -264,14 +270,14 @@ def _reconcile_plan(obj: dict, subscription):
 	from oneapp_control.billing import checkout, plans
 
 	items = (obj.get("items") or {}).get("data") or []
-	if len(items) != 1:
-		# Nothing to follow unambiguously. Left alone rather than guessed at:
-		# repricing a workspace off the wrong line item is worse than a stale
-		# record an operator can see and fix.
-		return
+	# The plan line, among however many the subscription carries. An add-on is a
+	# second recurring item by design, and this used to give up entirely as soon
+	# as there was one — silently, by returning, so a plan change made in the
+	# dashboard would simply never land.
+	item = plans.plan_item(items)
 
-	price_id = ((items[0] or {}).get("price") or {}).get("id")
-	plan = plans.plan_for_price(price_id)
+	price_id = ((item or {}).get("price") or {}).get("id")
+	plan = plans.plan_for_price(price_id) if price_id else None
 	if not plan:
 		# A price we did not mint — created in the dashboard, or from before the
 		# catalogue was synced. Logged rather than swallowed: it means a customer
@@ -285,6 +291,82 @@ def _reconcile_plan(obj: dict, subscription):
 
 	interval = plans.interval_for_price(price_id) or subscription.interval
 	checkout.apply_plan(subscription, plan, interval)
+
+
+def _reconcile_addons(obj: dict, subscription):
+	"""Follow the add-on lines Stripe is actually charging.
+
+	The sibling of `_reconcile_plan`, and it exists for the same reason: a line
+	added or removed in the Stripe dashboard is real money, and a subscription
+	whose add-on rows disagree with Stripe under-quotas or over-quotas a paying
+	workspace silently.
+
+	Stripe is the authority on *which lines exist and at what quantity*. It is
+	not the authority on what a unit is worth in GB — that was captured when the
+	line was bought, and a line minted in the dashboard has no capture to read,
+	so it falls back to the catalogue as it stands.
+	"""
+	from oneapp_control.billing import addons
+
+	items = (obj.get("items") or {}).get("data") or []
+	held = {row.addon: row for row in (subscription.addons or [])}
+
+	rows = []
+	for item in items:
+		price_id = ((item or {}).get("price") or {}).get("id")
+		addon = addons.addon_for_price(price_id)
+		if not addon:
+			continue
+
+		quantity = int(item.get("quantity") or 0)
+		if not quantity:
+			continue
+
+		before = held.get(addon)
+		rows.append({
+			"addon": addon,
+			"quantity": quantity,
+			"stripe_subscription_item_id": item.get("id"),
+			"stripe_price_id": price_id,
+			# What was captured, where there is a capture. A line somebody added
+			# in the dashboard has none, so the catalogue answers instead — and
+			# the alternative, treating it as zero GB, would take a workspace
+			# below what it is paying for.
+			"kind": (before.kind if before else None) or _addon_field(addon, "kind"),
+			"unit_gb": (before.unit_gb if before else None) or _addon_field(addon, "unit_gb"),
+			"unit_amount": before.unit_amount if before else None,
+			"currency": before.currency if before else None,
+			"added_on": (before.added_on if before else None) or now_datetime(),
+		})
+
+	if _same_addons(subscription, rows):
+		return
+
+	subscription.set("addons", [])
+	for row in rows:
+		subscription.append("addons", row)
+	subscription.save(ignore_permissions=True)
+
+
+def _addon_field(addon: str, field: str):
+	return frappe.db.get_value("Add-on", addon, field)
+
+
+def _same_addons(subscription, rows: list[dict]) -> bool:
+	"""Whether the rows already say what Stripe says.
+
+	Compared on what is billed — which add-on, how many, which line — rather than
+	on the whole row: the captured GB and rate are deliberately allowed to differ
+	from the catalogue, and rewriting them on every webhook would undo the
+	grandfathering they exist for.
+	"""
+	def shape(row):
+		get = row.get if isinstance(row, dict) else lambda k: getattr(row, k, None)
+		return (get("addon"), int(get("quantity") or 0), get("stripe_subscription_item_id"))
+
+	return sorted(shape(r) for r in (subscription.addons or [])) == sorted(
+		shape(r) for r in rows
+	)
 
 
 def handle_invoice_paid(obj: dict, record):
@@ -445,24 +527,57 @@ def grant_period_credits(subscription, period_end):
 def apply_subscription_status(subscription):
 	"""Translate billing state into tenant lifecycle.
 
-	Suspension is deliberately conservative: Past Due does nothing, because
-	Stripe is still retrying and cutting a paying customer off mid-dunning is
-	worse than carrying them for a few more days.
+	Stripe decides *when* a workspace stops being paid for; the ladder in
+	`oneapp_control.lifecycle.sweep` decides what follows, and this is the seam
+	between the two. Past Due still does nothing to the site — Stripe is retrying
+	and cutting a customer off mid-dunning is worse than carrying them — but it
+	now starts the clock here rather than waiting for tomorrow's sweep, so the
+	first email goes out within minutes of the failure instead of within a day.
+
+	Recovery is immediate for the same reason in reverse: somebody who has just
+	paid should not wait on a nightly job to get their workspace back.
 	"""
-	from oneapp_control.provisioning import runner
+	from oneapp_control.lifecycle import sweep
 
 	tenant = frappe.get_doc("Tenant", subscription.tenant)
 
-	if subscription.status in ("Active", "Trialing"):
-		if tenant.status == "Suspended":
-			runner.enqueue(
-				tenant.name,
-				"Resume Site",
-				idempotency_key=f"resume:{tenant.name}:{subscription.name}",
-			)
+	if tenant.lifecycle_hold:
 		return
 
+	if subscription.status in ("Active", "Trialing"):
+		if tenant.dunning_started_on or tenant.status in ("Suspended", "Archived"):
+			sweep.recover(tenant, triggered_by="Webhook")
+		return
+
+	if subscription.status in sweep.UNPAID and not tenant.dunning_started_on:
+		sweep.start(
+			tenant,
+			reason=f"Stripe reports the subscription as {subscription.status}.",
+			triggered_by="Webhook",
+		)
+
+	# A deliberate cancellation is not a missed payment: the customer asked for
+	# it, and carrying them through a grace period they did not want reads as us
+	# still billing. The site goes off now, and the rest of the ladder — archive,
+	# then purge — runs from the clock the same way.
 	if subscription.status == "Canceled" and tenant.status == "Active":
+		from oneapp_control.lifecycle import cold, events
+		from oneapp_control.provisioning import runner
+
+		# Last chance at a copy: a deactivated site is in maintenance mode, and
+		# Frappe's scheduler refuses to run at all under maintenance mode, so it
+		# can never make one afterwards.
+		cold.ensure(tenant.name, triggered_by="Webhook")
+
+		events.record(
+			tenant.name,
+			"Suspended",
+			triggered_by="Webhook",
+			reason="The customer cancelled the subscription.",
+			from_status=tenant.status,
+			to_status="Suspended",
+		)
+		tenant.db_set("dunning_stage", "Suspended")
 		runner.enqueue(
 			tenant.name,
 			"Suspend Site",
@@ -472,7 +587,14 @@ def apply_subscription_status(subscription):
 
 
 def grant_storage_pack(tenant: str, gb: int, checkout: dict):
-	"""Add-on storage is permanent — it is not a grant that expires."""
+	"""Honour a one-off storage purchase made before add-ons existed.
+
+	Storage is sold per month now, as a line on the subscription. Nothing opens
+	one of these sessions any more; this survives so that a checkout somebody had
+	open when the change shipped still delivers what they paid for. It lands in
+	`extra_storage_gb`, which is otherwise an operator's grant — permanent and
+	never billed again, which is exactly what they bought.
+	"""
 	if gb <= 0:
 		return
 

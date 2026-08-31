@@ -15,7 +15,7 @@ from frappe.utils import now_datetime
 
 from oneapp_control.utils.slug import is_available
 
-CUSTOMER_ROLE = "OneApp Customer"
+CUSTOMER_ROLE = "OneSpace Customer"
 
 
 def fulfil(request_name: str):
@@ -116,6 +116,10 @@ def ensure_tenant(request, user: str):
 			"plan": request.plan,
 			"region": request.region,
 			"storage_jurisdiction": request.storage_jurisdiction or "Global",
+			# Carried onto the workspace so "which of these are free demos" is a
+			# filter rather than a spreadsheet. Stripe holds the discount; this
+			# is only the name of the code it was sold under.
+			"promo_code": request.promo_code,
 			"status": "Draft",
 		}
 	).insert(ignore_permissions=True)

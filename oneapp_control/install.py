@@ -6,10 +6,44 @@ import frappe
 def after_install():
 	create_default_settings()
 	seed_apps()
+	setup_console()
+
+
+def after_migrate():
+	"""Re-seed the operator console from code on every migration.
+
+	The console's shape lives in `entitlements/operator.py` rather than in a
+	fixture somebody edits, so "change the console" is an edit and a migrate.
+	Running it here rather than only at install means an existing control plane
+	picks up a new screen without anybody remembering to.
+	"""
+	setup_console()
+
+
+def setup_console():
+	"""The two Spaces this site provides, and the DocPerms they depend on.
+
+	Only where `oneapp` is installed — the console is a Space, and a Space with
+	nothing to render it is a row nobody reads. A control plane running only
+	this app is a perfectly good control plane; it just has no console yet.
+	"""
+	try:
+		import oneapp  # noqa: F401
+	except ImportError:
+		return
+
+	from oneapp_control.entitlements import account, operator
+
+	operator.seed()
+	account.seed()
+	# One call for both: `sync_permissions` reconciles every local space's
+	# grants at once, and the account Space deliberately grants nothing.
+	operator.sync_permissions()
+	frappe.db.commit()
 
 
 def create_default_settings():
-	settings = frappe.get_single("OneApp Control Settings")
+	settings = frappe.get_single("OneSpace Control Settings")
 	if not settings.tenant_domain:
 		settings.tenant_domain = "4dl.app"
 	if not settings.press_api_url:
@@ -31,7 +65,7 @@ def create_default_settings():
 # customer's launcher, where it points at a "Not built yet" screen and grants
 # write on eight ERPNext doctypes over the REST API — a promise of software that
 # does not exist, made to someone paying. An operator grants it to a workspace
-# to exercise the pipeline (OneAdmin → a workspace → Apps), and nobody else sees
+# to exercise the pipeline (the console → a workspace → Apps), and nobody else sees
 # it.
 #
 # Its doctype list is deliberately small: the transitive set ERPNext actually
@@ -40,12 +74,11 @@ def create_default_settings():
 # invoice. It grows from running the real flows. See DECISIONS §8.
 SEED_APPS = [
 	{
-		"app_code": "books",
-		"app_label": "Books",
+		"space_code": "books",
+		"space_label": "Books",
 		"module": "Books",
-		"role_name": "OneApp Books",
+		"role_name": "OneSpace Books",
 		"icon": "lucide-book-open",
-		"route": "/books",
 		"sort_order": 10,
 		"availability": "Restricted",
 		"description": (
@@ -68,11 +101,11 @@ SEED_APPS = [
 
 def seed_apps():
 	for spec in SEED_APPS:
-		if frappe.db.exists("OneApp App", spec["app_code"]):
+		if frappe.db.exists("OneSpace Space", spec["space_code"]):
 			continue
 		doc = frappe.get_doc(
 			{
-				"doctype": "OneApp App",
+				"doctype": "OneSpace Space",
 				"is_active": 1,
 				# Restricted unless a spec says otherwise. Reaching every
 				# customer's launcher should be something a seed opts into, not

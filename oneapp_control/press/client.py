@@ -42,13 +42,13 @@ class PressPermanentError(PressError):
 
 
 def settings():
-	return frappe.get_single("OneApp Control Settings")
+	return frappe.get_single("OneSpace Control Settings")
 
 
 class PressClient:
 	"""Talks to Frappe Cloud on behalf of the control plane.
 
-	Credentials come from OneApp Control Settings, falling back to site config.
+	Credentials come from OneSpace Control Settings, falling back to site config.
 	The settings win because rotating a key should be a form save rather than a
 	redeploy — but a brand new control site has nobody signed in yet and nothing
 	configured, so site config is how it gets bootstrapped: press can write a
@@ -280,6 +280,24 @@ class PressClient:
 	def backup(self, site: str, with_files: bool = True):
 		return self.call("press.api.site.backup", name=site, with_files=with_files)
 
+	def restore(self, site: str, files: dict, skip_failing_patches: bool = False):
+		"""Rebuild a site from files it downloads itself.
+
+		`files` is `{database, public, private, config}` — URLs press fetches,
+		not uploads. Ours are presigned R2 links with an hour on them, which is
+		why they are minted immediately before this call rather than stored.
+
+		This is destructive on the target: press drops the site's database and
+		replaces it. It is only ever aimed at a site we have just created for
+		exactly this purpose. See `provisioning/steps.restore_from_cold`.
+		"""
+		return self.call(
+			"press.api.site.restore",
+			name=site,
+			files=files,
+			skip_failing_patches=skip_failing_patches,
+		)
+
 	def archive(self, site: str, force: bool = False):
 		return self.call("press.api.site.archive", name=site, force=force)
 
@@ -439,7 +457,7 @@ class PressClient:
 	def backups(self, site: str) -> list:
 		"""Recent backups press holds for a site, newest first.
 
-		Press keeps its own schedule; this is a view of it rather than a
+		Press keeps its own schedule; this is a screen of it rather than a
 		second one. Rows carry the file sizes and whether the copy is offsite.
 		"""
 		return self.call("press.api.site.backups", timeout=READ_TIMEOUT, name=site) or []

@@ -7,28 +7,35 @@ Two independent axes, deliberately:
   solution possible without inventing a plan for one customer.
 
 An app marked General is available to everyone. An app marked Restricted appears
-only where an explicit App Entitlement exists. A Restricted app that nobody has
+only where an explicit Space Entitlement exists. A Restricted app that nobody has
 been entitled to is simply invisible, not an error.
 """
 
 import frappe
 
 
-def apps_for_tenant(tenant: str) -> list[dict]:
-	"""The manifest the SPA launcher renders."""
+# What describes a space to a site. One list, two readers — the tenant sync and
+# the local provider — so the two cannot drift into describing different things.
+SPACE_FIELDS = (
+	"name as space_code", "space_label", "module", "role_name", "icon",
+	"logo", "sort_order", "description",
+)
+
+
+def spaces_for_tenant(tenant: str) -> list[dict]:
+	"""The manifest OneSpace renders: every space this workspace may open."""
 	general = frappe.get_all(
-		"OneApp App",
+		"OneSpace Space",
 		filters={"is_active": 1, "availability": "General"},
-		fields=["name as app_code", "app_label", "module", "role_name", "icon", "route",
-			"sort_order"],
+		fields=list(SPACE_FIELDS),
 	)
 
 	restricted = frappe.db.sql(
 		"""
-		SELECT a.name AS app_code, a.app_label, a.module, a.role_name, a.icon, a.route,
-		       a.sort_order
-		FROM `tabOneApp App` a
-		INNER JOIN `tabApp Entitlement` e ON e.app = a.name
+		SELECT a.name AS space_code, a.space_label, a.module, a.role_name, a.icon,
+		       a.logo, a.sort_order, a.description
+		FROM `tabOneSpace Space` a
+		INNER JOIN `tabSpace Entitlement` e ON e.app = a.name
 		WHERE a.is_active = 1
 		  AND a.availability = 'Restricted'
 		  AND e.tenant = %(tenant)s
@@ -38,13 +45,80 @@ def apps_for_tenant(tenant: str) -> list[dict]:
 		as_dict=True,
 	)
 
-	apps = general + restricted
-	apps.sort(key=lambda a: (a.get("sort_order") or 0, a.get("app_label") or ""))
-	return apps
+	spaces = general + restricted
+	spaces.sort(key=lambda s: (s.get("sort_order") or 0, s.get("space_label") or ""))
+
+	# The screens each space puts in front of a customer — its navigation. Sent
+	# with the space rather than fetched per space: OneSpace renders its sidebar
+	# from this the moment a workspace opens, and a second round trip for a list
+	# of four labels is a spinner where a sidebar should be.
+	for space in spaces:
+		space["screens"] = screens_for(space["space_code"])
+
+	return spaces
+
+
+# Every field a Space Screen carries, sent verbatim. Listed rather than `["*"]`
+# so a field added here is a deliberate act — and read off the doctype in
+# `tests/test_owner_and_manifest.py`, because the failure mode of a forgotten
+# one is silent: `status_field` was stored, edited in the console, and never
+# sent, so no screen anywhere ever showed a status badge and nothing said why.
+SCREEN_FIELDS = (
+	"screen", "label", "icon", "document_type", "fields", "component",
+	"filters", "order_by", "view_types", "view_settings", "status_field",
+)
+
+
+def screens_for(space_code: str) -> list[dict]:
+	return frappe.get_all(
+		"OneSpace Space Screen",
+		filters={"parent": space_code, "parenttype": "OneSpace Space"},
+		fields=list(SCREEN_FIELDS),
+		order_by="idx asc",
+	)
+
+
+def local_spaces() -> list[dict]:
+	"""Every space this site offers itself, for `oneapp` running on it.
+
+	The control plane holds the space registry and has no control plane to ask,
+	so where a tenant syncs, this reads the same rows in process. Registered
+	through `onespace_space_providers` in hooks, which is `oneapp`'s one seam
+	for it.
+
+	No entitlement join, unlike `spaces_for_tenant`: there is no tenant here.
+	Who sees which space is decided by role — `visible_spaces` filters on
+	`role_name`, so an operator space and a customer's account space separate
+	cleanly on one site — and by `_space`, which refuses a space code whose
+	role the caller does not hold.
+	"""
+	spaces = frappe.get_all(
+		"OneSpace Space",
+		filters={"is_active": 1},
+		fields=list(SPACE_FIELDS),
+	)
+	spaces.sort(key=lambda s: (s.get("sort_order") or 0, s.get("space_label") or ""))
+	for space in spaces:
+		space["screens"] = screens_for(space["space_code"])
+	return spaces
+
+
+def forget_spaces(doc=None, method=None) -> None:
+	"""Drop OneSpace's cached view of this site's spaces.
+
+	Only meaningful where `oneapp` is installed alongside this app — the
+	control site. Elsewhere the import fails and there is nothing to forget,
+	which is not an error: a tenant's cache is invalidated by its own sync.
+	"""
+	try:
+		from oneapp.oneapp_core import sync
+	except ImportError:
+		return
+	sync.invalidate()
 
 
 def entitled_modules(tenant: str) -> list[str]:
-	return [a["module"] for a in apps_for_tenant(tenant) if a.get("module")]
+	return [s["module"] for s in spaces_for_tenant(tenant) if s.get("module")]
 
 
 def entitled_roles(tenant: str) -> list[str]:
@@ -55,7 +129,7 @@ def entitled_roles(tenant: str) -> list[str]:
 	its users on every sync. That covers desk, REST, reports and any future
 	surface, which a bespoke permission hook would not.
 	"""
-	return [a["role_name"] for a in apps_for_tenant(tenant) if a.get("role_name")]
+	return [a["role_name"] for a in spaces_for_tenant(tenant) if a.get("role_name")]
 
 
 # The role the workspace owner holds. Deliberately not System Manager: that would
@@ -63,7 +137,7 @@ def entitled_roles(tenant: str) -> list[str]:
 # talk to us — enough to forge its own usage reports and credit commits. What
 # they actually need (inviting users, seats, custom roles) is whitelisted methods
 # we run elevated, not a Frappe admin role. See DECISIONS §8.
-OWNER_ROLE = "OneApp Workspace Owner"
+OWNER_ROLE = "OneSpace Workspace Owner"
 
 # Held by everyone in the workspace, the owner included. It grants nothing —
 # the app roles do that — and exists to mark an account as ours.
@@ -73,7 +147,7 @@ OWNER_ROLE = "OneApp Workspace Owner"
 # looks equivalent and is not: a member of a workspace with no apps entitled yet
 # holds none of them, so removing that member disabled nobody and they kept
 # their sign-in.
-MEMBER_ROLE = "OneApp Workspace Member"
+MEMBER_ROLE = "OneSpace Workspace Member"
 
 
 def permission_manifest(tenant: str) -> list[dict]:
@@ -84,13 +158,13 @@ def permission_manifest(tenant: str) -> list[dict]:
 	rather than by remembering to exclude things.
 	"""
 	manifest = []
-	for app in apps_for_tenant(tenant):
+	for app in spaces_for_tenant(tenant):
 		role = app.get("role_name")
 		if not role:
 			continue
 		rows = frappe.get_all(
-			"OneApp App Doctype",
-			filters={"parent": app["app_code"], "parenttype": "OneApp App"},
+			"OneSpace Space Doctype",
+			filters={"parent": app["space_code"], "parenttype": "OneSpace Space"},
 			fields=["document_type", "access", "if_owner"],
 		)
 		for row in rows:
@@ -115,30 +189,30 @@ def allowed_doctypes(tenant: str) -> list[str]:
 	return sorted({row["doctype"] for row in permission_manifest(tenant)})
 
 
-def grant(tenant: str, app_code: str, note: str | None = None):
-	if frappe.db.exists("App Entitlement", {"tenant": tenant, "app": app_code}):
+def grant(tenant: str, space_code: str, note: str | None = None):
+	if frappe.db.exists("Space Entitlement", {"tenant": tenant, "app": space_code}):
 		name = frappe.db.get_value(
-			"App Entitlement", {"tenant": tenant, "app": app_code}, "name"
+			"Space Entitlement", {"tenant": tenant, "app": space_code}, "name"
 		)
-		frappe.db.set_value("App Entitlement", name, "enabled", 1)
+		frappe.db.set_value("Space Entitlement", name, "enabled", 1)
 		return name
 
 	return frappe.get_doc(
 		{
-			"doctype": "App Entitlement",
+			"doctype": "Space Entitlement",
 			"tenant": tenant,
-			"app": app_code,
+			"app": space_code,
 			"enabled": 1,
 			"note": note,
 		}
 	).insert(ignore_permissions=True).name
 
 
-def revoke(tenant: str, app_code: str):
+def revoke(tenant: str, space_code: str):
 	name = frappe.db.get_value(
-		"App Entitlement", {"tenant": tenant, "app": app_code}, "name"
+		"Space Entitlement", {"tenant": tenant, "app": space_code}, "name"
 	)
 	if name:
 		# Kept as a disabled row rather than deleted, so the history of who had
 		# access to what survives.
-		frappe.db.set_value("App Entitlement", name, "enabled", 0)
+		frappe.db.set_value("Space Entitlement", name, "enabled", 0)
