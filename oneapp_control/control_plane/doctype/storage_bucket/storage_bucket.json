@@ -112,6 +112,7 @@
    "read_only": 1
   }
  ],
+ "in_create": 1,
  "index_web_pages_for_search": 1,
  "links": [],
  "modified": "2026-08-29 00:00:00.000000",
@@ -133,8 +134,26 @@
    "write": 1
   }
  ],
+ "search_fields": "jurisdiction,status",
  "sort_field": "modified",
  "sort_order": "DESC",
- "states": [],
+ "states": [
+  {
+   "color": "Blue",
+   "title": "Provisioning"
+  },
+  {
+   "color": "Green",
+   "title": "Active"
+  },
+  {
+   "color": "Yellow",
+   "title": "Full"
+  },
+  {
+   "color": "Gray",
+   "title": "Retired"
+  }
+ ],
  "track_changes": 1
 }

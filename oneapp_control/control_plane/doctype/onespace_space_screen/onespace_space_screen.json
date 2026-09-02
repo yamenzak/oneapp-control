@@ -12,13 +12,19 @@
   "document_type",
   "fields",
   "component",
+  "hide_new",
   "status_field",
   "view_types",
   "view_settings",
+  "tab_icons",
   "sec_view_query",
   "filters",
   "cb_view_sort",
-  "order_by"
+  "order_by",
+  "sec_screen_fixtures",
+  "naming_series",
+  "cb_screen_print",
+  "print_formats"
  ],
  "fields": [
   {
@@ -42,7 +48,7 @@
    "fieldname": "icon",
    "fieldtype": "Select",
    "label": "Icon",
-   "options": "lucide-layout-grid\nlucide-users\nlucide-user-round\nlucide-briefcase\nlucide-file-text\nlucide-receipt\nlucide-wallet\nlucide-shopping-cart\nlucide-package\nlucide-truck\nlucide-factory\nlucide-store\nlucide-calendar\nlucide-clock\nlucide-message-square\nlucide-mail\nlucide-phone\nlucide-chart-line\nlucide-chart-pie\nlucide-database\nlucide-book-open\nlucide-graduation-cap\nlucide-stethoscope\nlucide-wrench\nlucide-shield\nlucide-sparkles"
+   "options": "lucide-layout-grid\nlucide-database\nlucide-sparkles\nlucide-shield\nlucide-users\nlucide-user-round\nlucide-graduation-cap\nlucide-stethoscope\nlucide-briefcase\nlucide-calendar\nlucide-clock\nlucide-wrench\nlucide-file-text\nlucide-receipt\nlucide-wallet\nlucide-shopping-cart\nlucide-package\nlucide-truck\nlucide-factory\nlucide-store\nlucide-message-square\nlucide-mail\nlucide-phone\nlucide-chart-line\nlucide-chart-pie\nlucide-book-open"
   },
   {
    "fieldname": "cb_view_source",
@@ -68,6 +74,13 @@
    "label": "Component"
   },
   {
+   "default": "0",
+   "description": "Hide New on this screen even where the doctype allows one to be made. For a screen that reads records something else writes.",
+   "fieldname": "hide_new",
+   "fieldtype": "Check",
+   "label": "Never offer New"
+  },
+  {
    "description": "Which field says where a record stands \u2014 the one whose value goes on the badge beside a record's name. A fieldname, checked against the doctype like any other; the colours are the doctype's own Document States, not something to repeat here. Empty is no badge.",
    "fieldname": "status_field",
    "fieldtype": "Data",
@@ -81,10 +94,17 @@
    "label": "View Types"
   },
   {
-   "description": "Per type, what that type needs: {\"board\": {\"column_field\": \"status\"}, \"calendar\": {\"start_field\": \"date\"}}. Every fieldname in here is checked against the doctype like any other.",
+   "description": "Per type, what that type needs: {\"board\": {\"column_field\": \"status\", \"card_fields\": [\"priority\"]}}. Nested by view type because one screen offers several. A key ending in `_field` is one fieldname and `_fields` is a list of them; both are checked against the doctype like a filter or a sort, and anything else is dropped. A board may name a Select or a Link here instead of the status field \u2014 and a reader may name another again in a saved view, which is where their own choice lives. Each card-shaped type keeps its own `card_fields`: a board card sits under a heading naming the field it is bucketed by and a grid card does not.",
    "fieldname": "view_settings",
    "fieldtype": "Code",
    "label": "View Settings",
+   "options": "JSON"
+  },
+  {
+   "description": "An icon per tab of the record form, keyed by the tab's label: {\"Overview\": \"lucide-list\"}. Only where the tab's own words earn the wrong glyph \u2014 every tab has one without this. Names come from the SPA's TAB_ICONS.",
+   "fieldname": "tab_icons",
+   "fieldtype": "Code",
+   "label": "Tab Icons",
    "options": "JSON"
   },
   {
@@ -108,6 +128,28 @@
    "fieldname": "order_by",
    "fieldtype": "Data",
    "label": "Order By"
+  },
+  {
+   "fieldname": "sec_screen_fixtures",
+   "fieldtype": "Section Break",
+   "label": ""
+  },
+  {
+   "description": "Prefixes this screen's doctype offers, one per line \u2014 `ACME-INV-.YYYY.-.#####`. Applied once, when the space first arrives; the workspace edits its own afterwards under Settings, Naming. Ignored where the doctype has no `naming_series` field.",
+   "fieldname": "naming_series",
+   "fieldtype": "Small Text",
+   "label": "Naming Series"
+  },
+  {
+   "fieldname": "cb_screen_print",
+   "fieldtype": "Column Break"
+  },
+  {
+   "description": "Print formats to ship, as a list: [{\"name\": \"ACME Invoice\", \"default\": true, \"layout\": {...}, \"setup\": {...}}]. `layout` is Frappe's own `format_data` \u2014 draw it in the builder under Settings, Print formats and paste it here, so what an app ships and what a workspace draws are the same kind of thing. Created once, per format, if nothing of that name exists.",
+   "fieldname": "print_formats",
+   "fieldtype": "Code",
+   "label": "Print Formats",
+   "options": "JSON"
   }
  ],
  "index_web_pages_for_search": 1,

@@ -16,6 +16,8 @@
   "role_name",
   "sec_views",
   "screens",
+  "sec_space_roles",
+  "roles",
   "sec_manifest",
   "doctypes",
   "icon",
@@ -89,6 +91,18 @@
    "options": "OneSpace Space Screen"
   },
   {
+   "fieldname": "sec_space_roles",
+   "fieldtype": "Section Break",
+   "label": "Roles"
+  },
+  {
+   "description": "What this app offers a workspace to hand out. None is the old shape: one role, everything in the manifest.",
+   "fieldname": "roles",
+   "fieldtype": "Table",
+   "label": "Roles",
+   "options": "OneSpace Space Role"
+  },
+  {
    "fieldname": "sec_manifest",
    "fieldtype": "Section Break",
    "label": "Doctypes"
@@ -106,7 +120,7 @@
    "fieldname": "icon",
    "fieldtype": "Select",
    "label": "Icon",
-   "options": "lucide-layout-grid\nlucide-users\nlucide-user-round\nlucide-briefcase\nlucide-file-text\nlucide-receipt\nlucide-wallet\nlucide-shopping-cart\nlucide-package\nlucide-truck\nlucide-factory\nlucide-store\nlucide-calendar\nlucide-clock\nlucide-message-square\nlucide-mail\nlucide-phone\nlucide-chart-line\nlucide-chart-pie\nlucide-database\nlucide-book-open\nlucide-graduation-cap\nlucide-stethoscope\nlucide-wrench\nlucide-shield\nlucide-sparkles"
+   "options": "lucide-layout-grid\nlucide-database\nlucide-sparkles\nlucide-shield\nlucide-users\nlucide-user-round\nlucide-graduation-cap\nlucide-stethoscope\nlucide-briefcase\nlucide-calendar\nlucide-clock\nlucide-wrench\nlucide-file-text\nlucide-receipt\nlucide-wallet\nlucide-shopping-cart\nlucide-package\nlucide-truck\nlucide-factory\nlucide-store\nlucide-message-square\nlucide-mail\nlucide-phone\nlucide-chart-line\nlucide-chart-pie\nlucide-book-open"
   },
   {
    "description": "Shown on the rail. Without one the icon is drawn instead.",
@@ -152,10 +166,20 @@
    "write": 1
   }
  ],
+ "search_fields": "space_label,module",
  "show_title_field_in_link": 1,
  "sort_field": "modified",
  "sort_order": "DESC",
- "states": [],
+ "states": [
+  {
+   "color": "Green",
+   "title": "General"
+  },
+  {
+   "color": "Orange",
+   "title": "Restricted"
+  }
+ ],
  "title_field": "space_label",
  "track_changes": 1
 }

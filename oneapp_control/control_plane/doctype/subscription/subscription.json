@@ -215,6 +215,7 @@
    "options": "Subscription Add-on"
   }
  ],
+ "in_create": 1,
  "index_web_pages_for_search": 1,
  "links": [],
  "modified": "2026-08-29 00:00:00.000000",
@@ -236,8 +237,30 @@
    "write": 1
   }
  ],
+ "search_fields": "tenant,plan,status",
  "sort_field": "modified",
  "sort_order": "DESC",
- "states": [],
+ "states": [
+  {
+   "color": "Yellow",
+   "title": "Incomplete"
+  },
+  {
+   "color": "Light Blue",
+   "title": "Trialing"
+  },
+  {
+   "color": "Green",
+   "title": "Active"
+  },
+  {
+   "color": "Orange",
+   "title": "Past Due"
+  },
+  {
+   "color": "Red",
+   "title": "Canceled"
+  }
+ ],
  "track_changes": 1
 }

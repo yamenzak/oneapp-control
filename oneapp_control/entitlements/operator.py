@@ -30,7 +30,7 @@ DOCTYPES = (
 	"Stripe Webhook Event", "Plan", "Region", "Storage Bucket",
 	"OneSpace Space", "Space Entitlement", "AI Model", "AI Feature",
 	"AI Usage Record", "Support Login", "Add-on", "Credit Pack", "Promo Code",
-	"Tenant Lifecycle Event",
+	"Tenant Lifecycle Event", "Workspace Role",
 )
 
 # screen, label, icon, doctype, fields, status field
@@ -79,6 +79,11 @@ SCREENS = (
 	 "space_label,module,role_name,availability,is_active", "availability"),
 	("entitlements", "Entitlements", "lucide-shield", "Space Entitlement",
 	 "tenant,app,enabled", ""),
+	# A workspace's own roles. Read here rather than written: the workspace
+	# builds these itself, and an operator's reason to look is a support call
+	# about who can reach what.
+	("roles", "Workspace roles", "lucide-user-round", "Workspace Role",
+	 "tenant,role_label,is_active,created_by_email", ""),
 	("models", "AI models", "lucide-sparkles", "AI Model",
 	 "display_name,provider,capability,status,is_recommended", "status"),
 	("features", "AI features", "lucide-sparkles", "AI Feature",
@@ -125,11 +130,25 @@ def manifest() -> dict:
 		"role_name": ROLE,
 		"icon": "lucide-shield",
 		"sort_order": 0,
-		# General on this site, and narrowed by the role rather than by an
-		# entitlement: there is no tenant here to entitle. `visible_spaces` and
-		# `_space` both filter on `role_name`, so a customer signed in to their
-		# account area never sees this and cannot resolve it by name.
-		"availability": "General",
+		# Restricted, and entitled to nobody — which is what makes it operator-only
+		# rather than merely hidden.
+		#
+		# It was General, on the argument that there is no tenant on this site to
+		# entitle and `visible_spaces` narrows by role anyway. Both halves are
+		# true and the conclusion was still wrong: `local_spaces` — the reader
+		# that serves *this* site — does not filter on availability at all, so
+		# nothing here depended on General; while `spaces_for_tenant` hands every
+		# General space to every tenant, so this one was in every workspace's
+		# manifest. Each tenant site was being told to create an
+		# `OneSpace Operator` role with permissions over Tenant, Subscription and
+		# the credit ledger.
+		#
+		# Inert, because those doctypes do not exist on a tenant site and
+		# `sync_permissions` skips what it cannot find. But `allowed_doctypes` is
+		# read by the workspace's own role builder now, and a customer offered
+		# `Credit Ledger Entry` as something to grant is not a thing to leave
+		# resting on a doctype's absence.
+		"availability": "Restricted",
 		"is_active": 1,
 		"description": "Tenants, shards, provisioning, billing and the AI catalogue.",
 		"screens": [
