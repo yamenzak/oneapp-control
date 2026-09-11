@@ -17,6 +17,13 @@ sign in, and where it all came from. A restore needs the manifest more than it
 needs any single file — the database says what the workspace contained, and only
 the manifest says what it *was*.
 
+**The attachments are not in it, and are not missing.** A workspace with a
+bucket keeps its files as objects under `tenants/<tenant>/`, and the purge at the
+end of this ladder is the only thing that deletes them — so they outlive the
+site by exactly as long as the cold copy does, which is the whole window a
+restore can happen in. The manifest says where they are, because a year later
+that is not obvious from a directory holding a dump and a config.
+
 **The control plane cannot reach into a tenant site.** Every call goes the other
 way, over HMAC. So asking for a fresh copy is a flag the site picks up on its
 next sync, and the fallback when it never does is to promote the newest rolling
@@ -208,6 +215,15 @@ def manifest(tenant, *, stamp: str, artifacts: list[str], stale: bool = False) -
 		"stamp": stamp,
 		"stale": stale,
 		"artifacts": sorted(artifacts),
+		# Not an artifact and not absent. Said in words rather than left to be
+		# deduced by whoever opens this directory and finds no tarball.
+		"files": {
+			"where": f"{doc.storage_bucket or 'the bucket'}:tenants/{doc.name}/",
+			"note": (
+				"Attachments are objects, not a tarball. They are deleted only "
+				"by the purge that also deletes this copy."
+			),
+		},
 		"tenant": {
 			"name": doc.name,
 			"slug": doc.tenant_slug,
@@ -302,6 +318,15 @@ def purge(tenant, *, triggered_by: str = "Sweep", reason: str = "") -> dict:
 	"""
 	doc = tenant if hasattr(tenant, "get") else frappe.get_doc("Tenant", tenant)
 	bucket = bucket_for(doc)
+
+	# Belt and braces. `finalise_archive` stops the billing at the moment the
+	# site goes, which is where it belongs — but a workspace archived by hand
+	# before that existed, or one whose cancellation failed against an
+	# unreachable Stripe, arrives here still subscribed. Idempotent: a
+	# subscription already cancelled is nothing to cancel.
+	from oneapp_control.billing.checkout import stop_billing
+
+	stop_billing(doc.name, reason="The workspace is being purged.")
 
 	row = events.opening(
 		doc.name,

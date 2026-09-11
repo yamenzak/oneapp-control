@@ -15,6 +15,8 @@ and raises ``PressPermanentError`` to fail the job outright.
 import frappe
 from frappe.utils import now_datetime
 
+from oneapp_control import portal
+from oneapp_control.press import records
 from oneapp_control.press.client import (
 	PressPermanentError,
 	PressTransientError,
@@ -54,15 +56,30 @@ def uses_wildcard(shard) -> bool:
 	return shard.domain_mode == "Wildcard"
 
 
-def site_apps(shard) -> list[str]:
-	"""Apps to install, from the shard rather than hardcoded.
+#: What a bench is assumed to carry when press cannot be asked. Only ever the
+#: fallback — a screen that renders while Frappe Cloud is briefly unreachable
+#: should show something plausible rather than an empty list, and a provision
+#: that reaches press for everything else will not be running on this.
+ASSUMED_APPS = ("frappe", "erpnext", "hrms", "oneapp")
 
-	Bench groups differ — a control bench carries payments and oneapp_control, a
-	tenant bench carries oneapp — and press rejects a site referencing an app the
-	bench does not have.
+
+def site_apps(shard) -> list[str]:
+	"""Apps to install: what the bench group actually carries, asked of press.
+
+	Bench groups differ — a control bench carries oneapp_control, a tenant bench
+	carries oneapp — and press rejects a site referencing an app the bench does
+	not have.
+
+	This used to be `Shard.site_apps`, a required text box somebody typed to
+	match a bench they were reading off another screen. It had to be right, it
+	was checked against nothing, and it went stale the moment an app was added
+	to the group. Press has the list; there is no reason to keep a second one.
 	"""
-	raw = shard.site_apps or "frappe,erpnext,hrms,oneapp"
-	apps = [a.strip() for a in raw.split(",") if a.strip()]
+	from oneapp_control.press import records
+
+	apps = records.apps_of(shard.press_release_group) if shard.press_release_group else []
+	if not apps:
+		apps = list(ASSUMED_APPS)
 
 	# frappe is implicit but press expects it listed first.
 	if "frappe" not in apps:
@@ -136,7 +153,7 @@ def create_site(job):
 		plan=plan,
 		server=shard.press_server or None,
 		cluster=shard.press_cluster or None,
-		version=shard.press_version or None,
+		version=records.version_of(shard.press_release_group) or None,
 	)
 
 	if not result or not result.get("site"):
@@ -189,20 +206,39 @@ def push_site_config(job):
 
 	config = {
 		"oneapp_tenant": tenant.name,
+		# The label on the front of every address this workspace issues, and the
+		# key the email worker looks the tenant up by. The Tenant's *name* is
+		# not it — a slug taken twice gets a suffix — so both are sent.
+		"oneapp_tenant_slug": tenant.tenant_slug,
 		"oneapp_control_url": settings.control_plane_url,
+		# Where the workspace sends a person rather than a request: the account
+		# area, on the public hostname. On site config as well as the bench so a
+		# site provisioned before the next bench push already has it.
+		"oneapp_account_url": portal.account_url(),
 		"oneapp_hmac_secret": tenant.signing_secret(),
 		"oneapp_site_name": tenant.site_name,
 	}
 
-	# The bucket is per tenant, so unlike the R2 credentials it cannot live in
-	# bench config. Assigning here also rotates the pool when one fills.
+	# The bucket is per tenant, so unlike the account-wide R2 credentials it
+	# cannot live in bench config — and neither can the public host or the
+	# scoped keys, which belong to the bucket rather than to the account. A site
+	# with no assignment gets none of these and falls back to local disk, which
+	# is the right failure: better than writing into another jurisdiction's
+	# bucket because a bench-wide default was standing there.
 	if r2.is_configured():
 		try:
 			bucket = r2.assign(tenant.name)
+			# The document rather than named columns, for the reason
+			# `r2._keys` reads it that way: the credential fields are younger
+			# than the table.
+			row = frappe.get_doc("Storage Bucket", bucket)
 			config["oneapp_r2_bucket"] = bucket
-			config["oneapp_r2_public_base"] = (
-				frappe.db.get_value("Storage Bucket", bucket, "public_base_url") or ""
-			)
+			config["oneapp_r2_public_base"] = row.get("public_base_url") or ""
+			if row.get("access_key"):
+				secret = row.get_password("secret_key", raise_exception=False)
+				if secret:
+					config["oneapp_r2_access_key"] = row.access_key
+					config["oneapp_r2_secret_key"] = secret
 		except r2.R2Error as e:
 			# Storage is a capability, not a prerequisite: the workspace works
 			# without it and files fall back to local disk until it is fixed.
@@ -467,9 +503,21 @@ def archive_site(job):
 
 
 def finalise_archive(job):
+	"""The site is gone. Stop charging for it, and say so.
+
+	Here rather than at the purge sixty days later: what the customer is losing
+	at this moment is the product, and the cold-retention window after it is our
+	promise rather than something they are still buying. Never fatal — see
+	`billing.checkout.stop_billing` — because an archive that cannot finish
+	because Stripe is unreachable is a workspace stuck on the ladder, still
+	costing us a site plan, with every rung below it blocked.
+	"""
+	from oneapp_control.billing.checkout import stop_billing
+
 	tenant = frappe.get_doc("Tenant", job.tenant)
 	tenant.db_set("status", "Archived")
 	tenant.db_set("archived_on", now_datetime())
+	stop_billing(tenant.name, reason="The site was archived and deleted.")
 	return None
 
 
@@ -568,6 +616,81 @@ def finalise_restore(job):
 
 
 # --------------------------------------------------------------------------- #
+# Restore Point — a live workspace going back to one of its own backups.
+#
+# `Restore Site` above rebuilds a workspace whose site is gone. This is the
+# other restore, and it is more dangerous rather than less: the site is running,
+# somebody is using it, and what this replaces is a database with today's work
+# in it. So the decision is the customer's and is taken in front of a screen
+# that counts what will be lost — see `oneapp/onespace/restore.py` — and this
+# end does the two things that end cannot: press holds the credentials to drop a
+# live database, and only we can presign the objects it reads back.
+#
+# The files are not sent, and are not missing. Attachments are objects under
+# `tenants/<tenant>/` and the restore does not touch them; the site makes the
+# bucket agree with its new database afterwards, on the next sync.
+# --------------------------------------------------------------------------- #
+
+def restore_to_point(job):
+	"""Hand press presigned links to one rolling backup set."""
+	from oneapp_control.cloudflare import r2
+	from oneapp_control.lifecycle import backups as backup_policy
+	from oneapp_control.lifecycle import cold
+
+	tenant = frappe.get_doc("Tenant", job.tenant)
+	stamp = (job.parsed_payload().get("stamp") or "").strip()
+	if not stamp:
+		raise PressPermanentError("No restore point was named.")
+
+	bucket = cold.bucket_for(tenant)
+	if not bucket:
+		raise PressPermanentError(f"Tenant {job.tenant} has no storage bucket.")
+
+	prefix = f"{backup_policy.BACKUP_PREFIX}/{tenant.name}/{stamp}/"
+	files = {}
+	for row in r2.objects(bucket, prefix):
+		name = row["key"].rsplit("/", 1)[-1]
+		if RESTORE_FILES.get(name) and RESTORE_FILES[name] != "config":
+			files[RESTORE_FILES[name]] = r2.presign(bucket, row["key"])
+
+	if "database" not in files:
+		raise PressPermanentError(
+			f"The backup at {prefix} has no database dump. Restoring from it "
+			"would produce an empty workspace that looks like it worked."
+		)
+
+	result = get_client().restore(_site_for(job), files)
+	_capture_job_id(job, result)
+	return None
+
+
+def finalise_restore_point(job):
+	"""Record the restore, and set the clock the site reconciles against.
+
+	`restored_on` is the whole of the message to the site. It travels down the
+	ordinary sync, the site compares it with the copy that came out of the dump
+	— always older — and reconciles its bucket against its database exactly
+	once. Written last, after press says the restore landed: written earlier, a
+	restore that failed would have told a site that never changed to go and
+	delete the files it had.
+	"""
+	from oneapp_control.lifecycle import events
+
+	stamp = job.parsed_payload().get("stamp") or ""
+	tenant = frappe.get_doc("Tenant", job.tenant)
+	tenant.db_set("restored_on", now_datetime())
+
+	events.record(
+		tenant.name,
+		"Restored",
+		triggered_by="Customer",
+		reason=f"Restored to the backup taken at {stamp}, at the workspace's request.",
+		detail={"stamp": stamp},
+	)
+	return None
+
+
+# --------------------------------------------------------------------------- #
 # Install App
 #
 # A grant that needs an app the site has not got. New sites install the union of
@@ -603,6 +726,66 @@ def finalise_install(job):
 	from oneapp_control.entitlements import apps
 
 	apps.record_installed(job.tenant, [job.parsed_payload().get("app")])
+	return None
+
+
+# --------------------------------------------------------------------------- #
+# Uninstall App
+#
+# The one job in this file that destroys data on purpose. Frappe's uninstall
+# drops the app's doctypes and everything in them, and there is no undo but a
+# restore — which is why the first step here is a backup rather than the
+# uninstall, and why the customer had to type the workspace's name to get here.
+#
+# Its own job for the reason Install App is: minutes against a live database,
+# and a failure that has to be visible as a failed job with a step and an error.
+# --------------------------------------------------------------------------- #
+
+def back_up_first(job):
+	"""A restorable copy, before anything is dropped.
+
+	With files, because an app's records and the files attached to them go
+	together and a restore that brought back invoices with no attachments would
+	be a restore nobody wanted.
+
+	Not conditional on anything. A workspace removing a space they have used
+	for a year is exactly the case where "we take backups nightly" is not good
+	enough — the nightly one is up to a day old, and the room is being freed
+	now.
+	"""
+	result = get_client().backup(_site_for(job), with_files=True)
+	_capture_job_id(job, result)
+	return None
+
+
+def uninstall_app(job):
+	from oneapp_control.entitlements import apps
+
+	payload = job.parsed_payload()
+	app = (payload.get("app") or "").strip()
+	if not app:
+		raise PressPermanentError("Uninstall App requires an app in the payload.")
+
+	# Asked again here, not only when the job was queued. Minutes have passed,
+	# and in them the workspace may have switched the space back on or added
+	# another that needs the same app — in which case dropping it now would take
+	# the tables out from under something somebody is using.
+	apps.assert_can_drop(job.tenant, app)
+
+	# A lost response looks exactly like a call that never landed; the site's
+	# own list is what settles it.
+	if app not in apps.installed_on(job.tenant):
+		return None
+
+	result = get_client().uninstall_app(_site_for(job), app)
+	_capture_job_id(job, result)
+	return None
+
+
+def finalise_uninstall(job):
+	from oneapp_control.entitlements import apps
+
+	apps.record_uninstalled(job.tenant, [job.parsed_payload().get("app")])
 	return None
 
 
@@ -686,7 +869,7 @@ def create_standby_site(job):
 		plan=shard.press_site_plan or None,
 		server=shard.press_server or None,
 		cluster=shard.press_cluster or None,
-		version=shard.press_version or None,
+		version=records.version_of(shard.press_release_group) or None,
 	)
 
 	if not result or not result.get("site"):
@@ -813,10 +996,22 @@ PIPELINES = {
 		("register_mail_routing", register_mail_routing),
 		("finalise_restore", finalise_restore),
 	],
+	"Restore Point": [
+		("restore_to_point", restore_to_point),
+		("await_restore", await_agent),
+		("finalise_restore_point", finalise_restore_point),
+	],
 	"Install App": [
 		("install_app", install_app),
 		("await_agent", await_agent),
 		("finalise_install", finalise_install),
+	],
+	"Uninstall App": [
+		("back_up_first", back_up_first),
+		("await_backup", await_agent),
+		("uninstall_app", uninstall_app),
+		("await_agent", await_agent),
+		("finalise_uninstall", finalise_uninstall),
 	],
 	"Migrate Site": [
 		("migrate_site", migrate_site),

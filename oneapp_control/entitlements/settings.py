@@ -10,7 +10,7 @@ over through `onespace_settings_groups`. Nothing downstream can tell them apart
 from the workspace's own; what differs is `roles`, which is what keeps a
 customer's account dialog and an operator's out of each other.
 
-Read by `oneapp.oneapp_core.workspace.all_groups`, so this file is the whole of
+Read by `oneapp.onespace.workspace.all_groups`, so this file is the whole of
 what an operator can change here.
 """
 
@@ -31,9 +31,35 @@ def _setting(key, label, **kw):
 	tenant app at module scope would make the control plane refuse to load
 	wherever `oneapp` is not installed.
 	"""
-	from oneapp.oneapp_core.workspace import Setting
+	from oneapp.onespace.workspace import Setting
 
 	return Setting(key, label, targets=[(SETTINGS, key)], **kw)
+
+
+def _accounts(**filters) -> list[str]:
+	"""Accounts to choose between, as Select options.
+
+	A Select rather than a Link because the settings dialog draws a Link as a
+	plain text box — see `workspace.reference` for why the picker behind one
+	cannot run there. Narrowed by what the field is for: a chart of accounts is
+	a few hundred rows, and all of them in one dropdown is the same as none.
+	"""
+	try:
+		return sorted(
+			frappe.get_all("Account", filters={"is_group": 0, **filters},
+			               pluck="name", limit_page_length=0)
+		)
+	except Exception:
+		# ERPNext not installed, or no company set up yet. An empty list draws
+		# an empty dropdown; an exception would take the whole dialog down.
+		return []
+
+
+def _accounts_company() -> list[str]:
+	try:
+		return sorted(frappe.get_all("Company", pluck="name", limit_page_length=0))
+	except Exception:
+		return []
 
 
 def groups() -> list[dict]:
@@ -78,9 +104,37 @@ def groups() -> list[dict]:
 				"without these; nobody can pay you."
 			),
 			"settings": [
+				_setting("stripe_secret_key", "Stripe secret key", type="Password",
+				         hint="sk_live_… or sk_test_…. Everything charged, refunded "
+				              "or cancelled goes through it."),
 				_setting("stripe_webhook_secret", "Stripe webhook secret", type="Password"),
 				_setting("ai_markup_multiplier", "AI markup", type="Float",
 				         hint="What a model's own cost is multiplied by before it is charged."),
+			],
+		},
+		{
+			"key": "control-books",
+			"label": "Books",
+			"icon": "lucide-book-open",
+			"roles": OPERATOR_ROLES,
+			"description": (
+				"Where our own revenue lands. Invoices are raised either way; "
+				"without an account to settle them into, every customer reads "
+				"as outstanding and a Stripe payout reconciles against nothing."
+			),
+			"settings": [
+				_setting("books_company", "Company", type="Select",
+				         options_from=lambda: _accounts_company(),
+				         hint="Whose books these are. The global default when blank."),
+				_setting("stripe_clearing_account", "Stripe clearing account",
+				         type="Select",
+				         options_from=lambda: _accounts(account_type=("in", ("Bank", "Cash"))),
+				         hint="Stands for the Stripe balance. A payout is a transfer "
+				              "out of it."),
+				_setting("stripe_fee_account", "Processing fee account", type="Select",
+				         options_from=lambda: _accounts(root_type="Expense"),
+				         hint="What Stripe kept. Blank books the gross, and the "
+				              "clearing account then drifts by the fees."),
 			],
 		},
 		{
@@ -99,12 +153,9 @@ def groups() -> list[dict]:
 				_setting("cf_kv_namespace_id", "KV namespace ID"),
 				_setting("cf_kv_token", "KV API token", type="Password"),
 				_setting("r2_account_id", "R2 account ID"),
-				_setting("r2_bucket", "R2 bucket"),
-				_setting("r2_public_base", "R2 public base URL"),
 				_setting("r2_access_key", "R2 access key"),
 				_setting("r2_secret_key", "R2 secret key", type="Password"),
 				_setting("r2_admin_token", "R2 admin API token", type="Password"),
-				_setting("bucket_max_tenants", "Tenants per bucket", type="Int"),
 				_setting("mail_domain", "Mail domain"),
 				_setting("cf_email_token", "Email token", type="Password"),
 				_setting("mail_hourly_limit", "Emails per hour", type="Int"),

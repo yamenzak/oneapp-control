@@ -191,7 +191,7 @@ def checks() -> list[dict]:
 	shards = frappe.get_all(
 		"Shard",
 		filters={"status": "Active", "accepts_new_tenants": 1},
-		fields=["name", "domain_mode", "press_release_group", "press_version"],
+		fields=["name", "domain_mode", "press_release_group"],
 	)
 	per_tenant = [x for x in shards if x.domain_mode == "Per-tenant"]
 
@@ -241,13 +241,18 @@ def checks() -> list[dict]:
 			"where": "Shards",
 		},
 		{
-			"key": "shard_version",
+			"key": "shard_bench",
 			"group": BLOCKING,
-			"label": "Shards declare a bench version",
-			"ok": all(x.press_version for x in shards) if shards else False,
-			"detail": "Frappe Cloud matches a bench by server, version and apps. Without the version it falls back to its public path and fails naming the wrong cause.",
-			"needs": "A Frappe version on every shard, e.g. version-15.",
-			"where": "Shards → Bench version",
+			"label": "Shards name a bench group",
+			"ok": all(x.press_release_group for x in shards) if shards else False,
+			"detail": (
+				"Frappe Cloud matches a bench by server, version and apps. The "
+				"version and the app list are read off the group at the moment a "
+				"site is created — so the group is the one thing that has to be "
+				"named, and a shard without one cannot place anybody."
+			),
+			"needs": "A press bench group on every shard.",
+			"where": "Shards → Bench group",
 		},
 		{
 			"key": "cloudflare_dns",
@@ -285,10 +290,30 @@ def checks() -> list[dict]:
 			"key": "stripe_gateway",
 			"group": BILLING,
 			"label": "Stripe secret key",
-			"ok": bool(frappe.db.exists("Stripe Settings", {})),
-			"detail": "Held by the payments app, so there is one place to rotate it.",
+			"ok": _secret(s, "stripe_secret_key")
+			or bool(
+				frappe.db.exists("DocType", "Stripe Settings")
+				and frappe.db.exists("Stripe Settings", {})
+			),
+			"detail": "Everything charged, refunded or cancelled goes through it.",
 			"needs": "A Stripe secret key (sk_live_… or sk_test_…).",
-			"where": "Stripe Settings (payments app)",
+			"where": "Settings → Billing",
+		},
+		{
+			"key": "books_clearing",
+			"group": BILLING,
+			"label": "Cash lands in an account",
+			"ok": bool(s.get("stripe_clearing_account")),
+			"detail": (
+				"Invoices are raised either way. Without this they are never "
+				"paid off, so every customer reads as outstanding and a Stripe "
+				"payout reconciles against nothing."
+			),
+			"needs": (
+				"A bank or cash account standing for the Stripe balance, and an "
+				"expense account for the fee Stripe keeps."
+			),
+			"where": "Settings → Books",
 		},
 		{
 			"key": "stripe_webhook",
@@ -306,10 +331,14 @@ def checks() -> list[dict]:
 			"key": "r2",
 			"group": OPTIONAL,
 			"label": "R2 storage",
-			"ok": bool(s.r2_account_id and s.r2_bucket and s.r2_access_key)
+			"ok": bool(s.r2_account_id and s.r2_access_key)
 			and _secret(s, "r2_secret_key"),
 			"detail": "Tenant sites fall back to local disk until this is set.",
-			"needs": "A Cloudflare account ID, a bucket, and an R2 API token's access key and secret.",
+			"needs": (
+				"A Cloudflare account ID and an R2 API token's access key and "
+				"secret. The buckets themselves are records — one per "
+				"jurisdiction, made on the first signup that needs one."
+			),
 			"where": "Settings → Storage buckets",
 		},
 		{
@@ -395,12 +424,32 @@ def checks() -> list[dict]:
 			"where": "Settings → Cloudflare",
 		},
 		{
+			"key": "cf_account_token",
+			"group": OPTIONAL,
+			"label": "Cloudflare account token",
+			"ok": bool(_secret(s, "cf_admin_token")),
+			"detail": (
+				"The one token the mail bring-up runs on: it creates the KV "
+				"namespace, uploads the inbound worker, turns Email Routing on "
+				"and points the catch-all at it. Without it every step below "
+				"is manual."
+			),
+			"needs": (
+				"A token with Workers Scripts → Edit, Workers KV Storage → "
+				"Edit, Email Routing Rules → Edit, Zone → Read and DNS → Edit. "
+				"It never leaves the control plane."
+			),
+			"where": "Settings → Cloudflare (control plane only)",
+		},
+		{
 			"key": "email_inbound",
 			"group": OPTIONAL,
 			"label": "Inbound email routing",
-			"ok": bool(s.cf_kv_namespace_id) and _secret(s, "cf_kv_token"),
+			"ok": bool(s.cf_kv_namespace_id) and bool(
+				_secret(s, "cf_kv_token") or _secret(s, "cf_admin_token")
+			),
 			"detail": "Tenants provisioned before this exists are missing from the routing map; cloudflare.kv.resync_all backfills them.",
-			"needs": "A Workers KV namespace ID, and a token with Account → Workers KV Storage → Edit.",
+			"needs": "Press Bring up mail, which creates the namespace and deploys the worker.",
 			"where": "Settings → Cloudflare",
 		},
 		{

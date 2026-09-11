@@ -28,9 +28,12 @@ DOCTYPES = (
 	"Tenant", "Shard", "Provisioning Job", "Standby Site", "Account Request",
 	"Subscription", "Credit Ledger Entry", "Credit Reservation",
 	"Stripe Webhook Event", "Plan", "Region", "Storage Bucket",
-	"OneSpace Space", "Space Entitlement", "AI Model", "AI Feature",
+	"OneSpace Space", "Space Entitlement", "Space Claim Code",
+	"Space Claim Redemption", "AI Model", "AI Feature",
 	"AI Usage Record", "Support Login", "Add-on", "Credit Pack", "Promo Code",
 	"Tenant Lifecycle Event", "Workspace Role",
+	# Read-only, and not ours: three virtual doctypes over the press API.
+	"Press Site", "Press Server", "Press Bench Group",
 )
 
 # screen, label, icon, doctype, fields, status field
@@ -75,10 +78,28 @@ SCREENS = (
 	 "region_name,region_code,country,is_active", ""),
 	("buckets", "Buckets", "lucide-database", "Storage Bucket",
 	 "bucket_name,jurisdiction,status,tenant_count,bytes_used", "status"),
+	# Frappe Cloud's own records, read live. No table behind any of the three —
+	# see `press/records.py` — so these are the same screens over somebody
+	# else's truth, and the first of them is the one that finds an orphan: a
+	# site on the account with no workspace against it.
+	("sites", "Sites", "lucide-server", "Press Site",
+	 "site_name,status,tenant,bench_group,cluster,plan", "status"),
+	("servers", "Servers", "lucide-hard-drive", "Press Server",
+	 "server_name,title,status,cluster,plan", "status"),
+	("benches", "Bench groups", "lucide-layers", "Press Bench Group",
+	 "group_name,title,version", ""),
 	("spaces", "Spaces", "lucide-layout-grid", "OneSpace Space",
 	 "space_label,module,role_name,availability,is_active", "availability"),
 	("entitlements", "Entitlements", "lucide-shield", "Space Entitlement",
-	 "tenant,app,enabled", ""),
+	 "tenant,app,enabled,offered", ""),
+	# The other way a Restricted space reaches a workspace: a string somebody
+	# types. Two screens rather than one, because the question is usually "who
+	# has RUA and how did they get it", which is a list across codes rather than
+	# a list inside one. `docs/MARKETPLACE.md` §4.
+	("claims", "Claim codes", "lucide-wallet", "Space Claim Code",
+	 "claim_code,app,uses_allowed,uses_spent,expires_on,enabled", ""),
+	("redemptions", "Claims made", "lucide-receipt", "Space Claim Redemption",
+	 "claim_code,tenant,app,redeemed_by,redeemed_on", ""),
 	# A workspace's own roles. Read here rather than written: the workspace
 	# builds these itself, and an operator's reason to look is a support call
 	# about who can reach what.
@@ -198,7 +219,7 @@ def sync_permissions() -> None:
 	registry, so there is one implementation of what a manifest means.
 	"""
 	try:
-		from oneapp.oneapp_core import sync
+		from oneapp.onespace import sync
 	except ImportError:
 		# `oneapp` is not installed here, so there is no console to grant for.
 		return

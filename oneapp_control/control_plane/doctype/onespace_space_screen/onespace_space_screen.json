@@ -17,6 +17,7 @@
   "status_field",
   "view_types",
   "view_settings",
+  "field_icons",
   "tab_icons",
   "sec_view_query",
   "filters",
@@ -55,7 +56,7 @@
    "fieldname": "icon",
    "fieldtype": "Select",
    "label": "Icon",
-   "options": "lucide-layout-grid\nlucide-database\nlucide-sparkles\nlucide-shield\nlucide-users\nlucide-user-round\nlucide-graduation-cap\nlucide-stethoscope\nlucide-briefcase\nlucide-calendar\nlucide-clock\nlucide-wrench\nlucide-file-text\nlucide-receipt\nlucide-wallet\nlucide-shopping-cart\nlucide-package\nlucide-truck\nlucide-factory\nlucide-store\nlucide-message-square\nlucide-mail\nlucide-phone\nlucide-chart-line\nlucide-chart-pie\nlucide-book-open"
+   "options": "lucide-layout-grid\nlucide-database\nlucide-sparkles\nlucide-shield\nlucide-users\nlucide-user-round\nlucide-graduation-cap\nlucide-stethoscope\nlucide-briefcase\nlucide-calendar\nlucide-clock\nlucide-wrench\nlucide-git-compare\nlucide-file-text\nlucide-receipt\nlucide-wallet\nlucide-shopping-cart\nlucide-package\nlucide-truck\nlucide-factory\nlucide-store\nlucide-message-square\nlucide-mail\nlucide-phone\nlucide-bus\nlucide-route\nlucide-map-pin\nlucide-map\nlucide-server\nlucide-hard-drive\nlucide-layers\nlucide-chart-line\nlucide-chart-pie\nlucide-book-open"
   },
   {
    "fieldname": "cb_view_source",
@@ -105,6 +106,13 @@
    "fieldname": "view_settings",
    "fieldtype": "Code",
    "label": "View Settings",
+   "options": "JSON"
+  },
+  {
+   "description": "Optional. `{\"status\": \"lucide-flag\"}` \u2014 a lucide name per fieldname, where the fieldtype's own icon says the wrong thing. Checked against the doctype like any other fieldname, and against the SPA's icon set: a name outside it emits no CSS and would draw an empty box.",
+   "fieldname": "field_icons",
+   "fieldtype": "Code",
+   "label": "Field Icons",
    "options": "JSON"
   },
   {

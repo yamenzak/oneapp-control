@@ -32,6 +32,28 @@ export const systemTimezone = read('system_timezone', '')
 // "not covered locally" for as long as it was.
 export const isDev = import.meta.env.DEV
 export const devServer = !!read('dev_server', 0) || import.meta.env.DEV
+// What this workspace looks like: `{ accent, favicon, splash }`, built by
+// `onespace/branding.py`. All three are wanted before the first paint — the
+// accent so no button is drawn in the default colour and then repainted, the
+// favicon so the tab does not visibly change — which is why they ride the boot
+// payload rather than the session resource.
+export const brand = read('brand', {})
+// Which language to draw in, and therefore which way. The reader's own, or the
+// workspace's — `www/one.py` decides; this only has to know the answer before
+// the first paint, because changing it later moves the whole layout.
+export const lang = read('lang', 'en')
+// Who the assistant is: `{ name, avatar, tone, personality }`, built by
+// `onespace/ai/settings.py`. Here for the same reason the favicon is — the
+// chat rail and the panel header name it before anything is fetched, and a
+// header that says "Assistant" for a moment and then says something else is a
+// visible flicker. `lib/shell/assistant.js` makes it reactive from here.
+export const assistant = read('assistant', {})
+// Where map tiles come from: `{ style, tiles, attribution }`, built by
+// `onespace/basemap.py` out of site config. A deployment fact, not a
+// workspace's choice — which tile store a bench points at is decided by
+// whoever runs the bench — and every map surface in the product reads the same
+// answer, so a self-hosted or air-gapped install changes it in one place.
+export const basemap = read('basemap', {})
 
 export default {
   siteName,
@@ -41,4 +63,8 @@ export default {
   systemTimezone,
   isDev,
   devServer,
+  brand,
+  lang,
+  assistant,
+  basemap,
 }

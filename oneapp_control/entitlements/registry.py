@@ -6,9 +6,35 @@ Two independent axes, deliberately:
 * **Entitlement** decides apps. That is what makes a single-tenant bespoke
   solution possible without inventing a plan for one customer.
 
-An app marked General is available to everyone. An app marked Restricted appears
-only where an explicit Space Entitlement exists. A Restricted app that nobody has
-been entitled to is simply invisible, not an error.
+**A workspace has exactly the spaces its entitlements enable.** One rule, and it
+is worth stating plainly because it used to be two: General spaces reached every
+launcher whether or not anybody wanted them, and only Restricted ones went
+through an entitlement at all. Which meant a customer had nothing to add and
+nothing to turn off, and a marketplace could only ever have been about private
+apps.
+
+`availability` no longer decides what a workspace *has*. It decides who may
+**see** a space on offer:
+
+* **General** — anybody may see it in the marketplace and switch it on.
+* **Restricted** — only a workspace that was `offered` it, by an operator or by
+  redeeming a code. A Restricted space nobody was offered is invisible, not an
+  error: a marketplace that drew a locked card for every one of them would tell
+  every customer the name of every bespoke solution built for every other one.
+
+So an entitlement carries two independent flags:
+
+* `enabled` — they have it. It is in their launcher, and its app is on the site.
+* `offered` — they may see it. Only meaningful for a Restricted space; a General
+  one is visible to everybody by being General.
+
+Both off is a revoked row, kept for the history.
+
+`OneSpace Space.on_by_default` is the third piece and belongs to *neither*
+axis: it decides what a **new** workspace starts switched on. A product nobody
+should have to go looking for is on by default; one people should choose is not.
+Existing workspaces were switched on by a patch, because a rule change must not
+take somebody's apps away.
 """
 
 import frappe
@@ -18,7 +44,7 @@ import frappe
 # the local provider — so the two cannot drift into describing different things.
 SPACE_FIELDS = (
 	"name as space_code", "space_label", "module", "role_name", "icon",
-	"logo", "sort_order", "description", "theme", "requires_apps",
+	"logo", "brand", "sort_order", "description", "theme", "requires_apps",
 	"custom_fields",
 )
 
@@ -39,20 +65,19 @@ BASE_APPS = ("frappe", "oneapp")
 
 
 def spaces_for_tenant(tenant: str) -> list[dict]:
-	"""The manifest OneSpace renders: every space this workspace may open."""
-	general = frappe.get_all(
-		"OneSpace Space",
-		filters={"is_active": 1, "availability": "General"},
-		fields=list(SPACE_FIELDS),
-	)
+	"""The manifest OneSpace renders: every space this workspace has.
 
-	restricted = frappe.db.sql(
+	One query over enabled entitlements, whatever the space's availability.
+	This was two — every General space plus the entitled Restricted ones —
+	and the General half is what made the marketplace impossible: a space
+	everybody already had was a space with no button to press.
+	"""
+	spaces = frappe.db.sql(
 		f"""
 		SELECT {SPACE_COLUMNS}
 		FROM `tabOneSpace Space` a
 		INNER JOIN `tabSpace Entitlement` e ON e.app = a.name
 		WHERE a.is_active = 1
-		  AND a.availability = 'Restricted'
 		  AND e.tenant = %(tenant)s
 		  AND e.enabled = 1
 		""",
@@ -60,7 +85,6 @@ def spaces_for_tenant(tenant: str) -> list[dict]:
 		as_dict=True,
 	)
 
-	spaces = general + restricted
 	spaces.sort(key=lambda s: (s.get("sort_order") or 0, s.get("space_label") or ""))
 
 	# The screens each space puts in front of a customer — its navigation. Sent
@@ -81,7 +105,7 @@ def spaces_for_tenant(tenant: str) -> list[dict]:
 SCREEN_FIELDS = (
 	"screen", "label", "singular", "icon", "document_type", "fields", "component",
 	"filters", "order_by", "view_types", "view_settings", "status_field",
-	"hide_new", "tab_icons", "naming_series", "print_formats",
+	"hide_new", "tab_icons", "field_icons", "naming_series", "print_formats",
 )
 
 
@@ -127,7 +151,7 @@ def forget_spaces(doc=None, method=None) -> None:
 	which is not an error: a tenant's cache is invalidated by its own sync.
 	"""
 	try:
-		from oneapp.oneapp_core import sync
+		from oneapp.onespace import sync
 	except ImportError:
 		return
 	sync.invalidate()
@@ -240,6 +264,44 @@ OWNER_ROLE = "OneSpace Workspace Owner"
 MEMBER_ROLE = "OneSpace Workspace Member"
 
 
+# --------------------------------------------------------------------------- #
+# What no manifest may grant, however it asks
+#
+# The allowlist used to be an allowlist by *absence*: `User`, `Role` and
+# `DocType` were unreachable because no manifest named them, and the docstring
+# said as much. Absence is not a guarantee — it is a thing that is true until
+# somebody writes a manifest row, and one line in one space module is all it
+# takes. The dev fixture already had it: `zzmock` declared `Role` at Manage,
+# so the workspace role builder offered "Role — Manage" in a dropdown, and a
+# customer who picked it could put themselves in System Manager.
+#
+# So these are refused here, at the one place every DocPerm and every custom
+# role is computed. Not a list of dangerous doctypes — a list of the doctypes
+# that grant power over the permission system itself, over who a user is, or
+# over what code runs. Everything else a space exposes is the space's business.
+#
+# It applies to the shipped manifest too, not only to what a customer may
+# build: a space naming one of these is a bug in the space, and the honest
+# behaviour is for the grant to do nothing rather than to work.
+NEVER_GRANTED = frozenset({
+	# Who somebody is, and what they may do.
+	"User", "Role", "Role Profile", "Custom Role", "User Permission",
+	"DocPerm", "Custom DocPerm", "User Type",
+	# The schema, and the permission rules hanging off it.
+	"DocType", "DocField", "Custom Field", "Property Setter",
+	"Module Def", "Package",
+	# Code that runs as us.
+	"Server Script", "Client Script", "Scheduled Job Type", "Webhook",
+	# The platform's own bookkeeping about tenancy. A tenant site does not
+	# carry these, but the control plane runs OneSpace over itself.
+	"OneSpace Space", "OneSpace Space Doctype", "OneSpace Space Role",
+	"OneSpace Space Screen", "Workspace Role", "Workspace Role Grant",
+	"Space Entitlement", "Tenant", "Tenant Member",
+	# Settings that reach past the workspace.
+	"System Settings", "Installed Applications",
+})
+
+
 def permission_manifest(tenant: str) -> list[dict]:
 	"""Every role the tenant site should define, and what each may touch.
 
@@ -258,6 +320,17 @@ def permission_manifest(tenant: str) -> list[dict]:
 			fields=["document_type", "access", "if_owner", "role"],
 		)
 		for row in rows:
+			if row["document_type"] in NEVER_GRANTED:
+				# A space is not allowed to hand out the permission system,
+				# whatever its manifest says. Logged rather than thrown: this
+				# runs on every sync, and a bad manifest row must not stop a
+				# workspace's other twenty from reaching it.
+				frappe.log_error(
+					title="A space asked for a doctype no space may grant",
+					message=f"{app['space_code']} declares {row['document_type']}",
+				)
+				continue
+
 			# A grant naming no role belongs to every role in the space. That is
 			# what a manifest written before roles existed meant, and it is also
 			# the honest way to say "everyone here can at least see this".
@@ -292,6 +365,11 @@ def _custom_manifest(tenant: str) -> list[dict]:
 			filters={"parent": role["name"], "parenttype": "Workspace Role"},
 			fields=["document_type", "access", "if_owner"],
 		):
+			if grant["document_type"] in NEVER_GRANTED:
+				# Belt and braces. `validate` refuses one of these on save, so
+				# a row here is one that predates the rule or arrived some
+				# other way — and the sync is the last place to catch it.
+				continue
 			rows.append({
 				"role": name,
 				"doctype": grant["document_type"],
@@ -377,9 +455,11 @@ def _keys(held: str | None) -> list[str]:
 def allowed_doctypes(tenant: str) -> list[str]:
 	"""What a customer's own role may reference.
 
-	The same list the DocPerms come from. User, Role, DocType and the rest are
-	out because they appear in no manifest, not because someone remembered to
-	name them.
+	The same list the DocPerms come from, so it cannot drift from what the
+	workspace's spaces actually expose — and `permission_manifest` has already
+	dropped everything in `NEVER_GRANTED`, so User, Role and DocType are out
+	because a rule says so rather than because no manifest happened to name
+	them.
 	"""
 	return sorted({row["doctype"] for row in permission_manifest(tenant)})
 
@@ -402,7 +482,11 @@ def grant(tenant: str, space_code: str, note: str | None = None):
 		"Space Entitlement", {"tenant": tenant, "app": space_code}, "name"
 	)
 	if name:
-		frappe.db.set_value("Space Entitlement", name, "enabled", 1)
+		# Enabled implies offered: a space somebody is using is not one they are
+		# forbidden to see, and leaving the second flag off would take it out of
+		# their marketplace the moment they turned it off themselves.
+		frappe.db.set_value(
+			"Space Entitlement", name, {"enabled": 1, "offered": 1})
 	else:
 		name = frappe.get_doc(
 			{
@@ -410,12 +494,132 @@ def grant(tenant: str, space_code: str, note: str | None = None):
 				"tenant": tenant,
 				"app": space_code,
 				"enabled": 1,
+				"offered": 1,
 				"note": note,
 			}
 		).insert(ignore_permissions=True).name
 
 	apps.reconcile(tenant)
 	return name
+
+
+def offer(tenant: str, space_code: str, note: str | None = None):
+	"""Let a workspace see a space, without turning it on for them.
+
+	The half of the marketplace an operator drives: RUA is Restricted and
+	invisible to everybody, and this is what puts it on one customer's shelf.
+	Pressing the card is then theirs to do, which is what makes it a marketplace
+	rather than a request form.
+
+	Refused on the same ground `grant` is refused, and deliberately at this end
+	rather than at the customer's: a card that can only ever fail is worse than
+	no card, and the operator offering it is the one who can do something about
+	a bench that cannot carry the app.
+
+	Which does not make the marketplace's `unavailable` state unreachable — a
+	bench is not fixed. A space offered onto one that carried its app, on a
+	workspace later moved to a shard that does not, is exactly the case where a
+	customer would otherwise press a button that fails.
+	"""
+	from oneapp_control.entitlements import apps
+
+	apps.assert_can_carry(tenant, space_code)
+
+	name = frappe.db.get_value(
+		"Space Entitlement", {"tenant": tenant, "app": space_code}, "name"
+	)
+	if name:
+		# `enabled` is left exactly as it is. Offering a space somebody already
+		# has is a no-op, not a downgrade.
+		frappe.db.set_value("Space Entitlement", name, "offered", 1)
+		return name
+
+	# No `reconcile`: nothing is installed until they press the card. That is
+	# the whole point of the second flag — an offer costs a row, not minutes of
+	# patches against a live database.
+	return frappe.get_doc(
+		{
+			"doctype": "Space Entitlement",
+			"tenant": tenant,
+			"app": space_code,
+			"enabled": 0,
+			"offered": 1,
+			"note": note,
+		}
+	).insert(ignore_permissions=True).name
+
+
+def offered_spaces(tenant: str) -> list[dict]:
+	"""Every space this workspace could switch on and has not.
+
+	Two halves, and they are two because "may I see this" is answered two
+	different ways: a General space is visible by being General, and a
+	Restricted one only where somebody wrote down that this workspace may see
+	it. `LEFT JOIN` rather than two queries, because the General half has to
+	ask about an entitlement that usually is not there.
+
+	Enabled spaces are not here — they are in `spaces_for_tenant`, which is
+	where a space they already have belongs.
+	"""
+	return frappe.db.sql(
+		f"""
+		SELECT {SPACE_COLUMNS}
+		FROM `tabOneSpace Space` a
+		LEFT JOIN `tabSpace Entitlement` e
+		       ON e.app = a.name AND e.tenant = %(tenant)s
+		WHERE a.is_active = 1
+		  AND COALESCE(e.enabled, 0) = 0
+		  AND (a.availability = 'General' OR COALESCE(e.offered, 0) = 1)
+		ORDER BY a.sort_order, a.space_label
+		""",
+		{"tenant": tenant},
+		as_dict=True,
+	)
+
+
+def start_a_workspace_with(tenant: str) -> list[str]:
+	"""Switch on what a new workspace should not have to go looking for.
+
+	Called once, when the tenant exists and before its site is built, so the
+	first `create_site` installs the union of what these need in one go rather
+	than one Install App job per app afterwards.
+
+	`on_by_default` and General both: a Restricted space is never something a
+	workspace starts with, whatever its default says — that is what makes it
+	restricted.
+	"""
+	codes = frappe.get_all(
+		"OneSpace Space",
+		filters={"is_active": 1, "availability": "General", "on_by_default": 1},
+		pluck="name",
+	)
+	for code in codes:
+		if not frappe.db.exists("Space Entitlement", {"tenant": tenant, "app": code}):
+			frappe.get_doc({
+				"doctype": "Space Entitlement",
+				"tenant": tenant,
+				"app": code,
+				"enabled": 1,
+				"offered": 1,
+				"note": "On by default when this workspace was made.",
+			}).insert(ignore_permissions=True)
+	return codes
+
+
+def disable(tenant: str, space_code: str):
+	"""Switch a space off without taking it away.
+
+	The customer's own verb, and deliberately not `revoke`: `offered` is left
+	alone, so a Restricted space they were given stays on their shelf and they
+	can switch it back on. Nothing is uninstalled and nothing is deleted — the
+	app stays on the site with its data, which is what makes this reversible in
+	a second rather than in a restore.
+	"""
+	name = frappe.db.get_value(
+		"Space Entitlement", {"tenant": tenant, "app": space_code}, "name"
+	)
+	if name:
+		frappe.db.set_value("Space Entitlement", name, "enabled", 0)
 
 
 def revoke(tenant: str, space_code: str):
@@ -425,4 +629,9 @@ def revoke(tenant: str, space_code: str):
 	if name:
 		# Kept as a disabled row rather than deleted, so the history of who had
 		# access to what survives.
-		frappe.db.set_value("Space Entitlement", name, "enabled", 0)
+		#
+		# Both flags, and this is the whole of "take it away": leaving `offered`
+		# on would put the card straight back in their marketplace with a button
+		# that works, which is not what anybody means by revoke.
+		frappe.db.set_value(
+			"Space Entitlement", name, {"enabled": 0, "offered": 0})

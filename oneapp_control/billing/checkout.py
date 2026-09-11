@@ -9,7 +9,7 @@ Two shapes, deliberately different:
 
 import frappe
 from frappe import _
-from frappe.utils import now_datetime
+from frappe.utils import cint, now_datetime
 
 from oneapp_control import portal
 from oneapp_control.billing import addons as addon_catalogue
@@ -55,6 +55,27 @@ def _sellable(plan: str, interval: str):
 	return plan_doc, price_id
 
 
+def trial_days_for(tenant: str, plan_doc) -> int:
+	"""How long this workspace's trial is, which is usually not at all.
+
+	Once per workspace, ever. Stripe will happily start a fresh trial on every
+	new subscription, so cancelling and resubscribing would be an unlimited
+	supply of free months — and the cheapest way to find that out is from a
+	customer who already has. Any subscription this workspace has ever held,
+	whatever state it ended in, spends the trial.
+
+	The card is still taken at checkout. The trial moves *when* the first charge
+	lands, not whether there is a card behind it, so it opens no abuse surface
+	that signing up does not already open.
+	"""
+	days = cint(getattr(plan_doc, "trial_days", 0))
+	if days <= 0:
+		return 0
+	if frappe.db.exists("Subscription", {"tenant": tenant}):
+		return 0
+	return days
+
+
 @frappe.whitelist()
 def start_subscription(tenant: str, plan: str, interval: str = "Monthly") -> dict:
 	"""Create a Checkout session for a plan subscription."""
@@ -63,6 +84,13 @@ def start_subscription(tenant: str, plan: str, interval: str = "Monthly") -> dic
 
 	success_url, cancel_url = _urls(tenant)
 
+	# Echoed back on every webhook, so we never have to guess which tenant an
+	# event belongs to.
+	subscription_data = {"metadata": {"tenant": tenant, "plan": plan}}
+	trial = trial_days_for(tenant, plan_doc)
+	if trial:
+		subscription_data["trial_period_days"] = trial
+
 	session = stripe_client.create_checkout_session(
 		mode="subscription",
 		line_items=[{"price": price_id, "quantity": 1}],
@@ -70,13 +98,11 @@ def start_subscription(tenant: str, plan: str, interval: str = "Monthly") -> dic
 		cancel_url=cancel_url,
 		customer_email=tenant_doc.owner_email,
 		client_reference_id=tenant,
-		# Echoed back on every webhook, so we never have to guess which tenant an
-		# event belongs to.
-		subscription_data={"metadata": {"tenant": tenant, "plan": plan}},
+		subscription_data=subscription_data,
 		metadata={"tenant": tenant, "plan": plan, "interval": interval},
 	)
 
-	return {"url": session.get("url"), "id": session.get("id")}
+	return {"url": session.get("url"), "id": session.get("id"), "trial_days": trial}
 
 
 @frappe.whitelist()
@@ -294,6 +320,81 @@ def billing_portal(tenant: str) -> dict:
 		subscription.stripe_customer_id, portal.account_url(tenant, "billing")
 	)
 	return {"url": session.get("url")}
+
+
+# --------------------------------------------------------------------------- #
+# Stopping
+#
+# The other end of a subscription, and the one nobody writes until a customer
+# writes to them. `stripe_client.cancel_subscription` has existed since Phase 4
+# and had no caller anywhere: the ladder deleted a workspace's site, deleted its
+# objects, and left the subscription running. Stripe's own dunning usually
+# cancels first, which is exactly why this was easy to miss — the failure only
+# appears in the case that does not go through dunning at all, and it appears as
+# a charge for a workspace we destroyed.
+# --------------------------------------------------------------------------- #
+
+#: The moment we stop charging is the moment the site is deleted, not sixty days
+#: later when the objects go. A customer whose workspace is gone is not a
+#: customer, and the cold-retention window is our promise to them rather than
+#: something they are still buying.
+def stop_billing(tenant: str, reason: str = "") -> dict:
+	"""Cancel this workspace's subscription in Stripe. Idempotent, never fatal.
+
+	**Immediately, not at period end.** `cancel_at_period_end` keeps the
+	subscription alive through a month the workspace no longer exists for, and
+	the thing being avoided here is precisely a live subscription against a
+	deleted site. Whether the unused part of a paid month is refunded is a
+	human's decision and Stripe's dashboard; it is not something to encode in a
+	sweep that runs at two in the morning.
+
+	Never fatal because of what calls it: an archive that cannot finish because
+	Stripe is unreachable is a workspace stuck mid-ladder, still costing us a
+	site plan, and the next rung down cannot run either. So a failure is logged,
+	recorded against the workspace, and retried by the purge — which calls this
+	again and finds it either done or still failing.
+	"""
+	from oneapp_control.lifecycle import events
+
+	rows = frappe.get_all(
+		"Subscription",
+		filters={"tenant": tenant, "status": ("!=", "Canceled")},
+		fields=["name", "stripe_subscription_id"],
+	)
+	live = [row for row in rows if row.get("stripe_subscription_id")]
+	if not live:
+		return {"ok": True, "cancelled": 0, "reason": "nothing to cancel"}
+
+	cancelled, failed = [], []
+	for row in live:
+		try:
+			stripe_client.cancel_subscription(
+				row["stripe_subscription_id"], at_period_end=False
+			)
+		except Exception as e:
+			failed.append({"subscription": row["name"], "error": str(e)[:200]})
+			frappe.log_error(
+				title=f"Could not stop billing {tenant}",
+				message=(
+					f"{row['stripe_subscription_id']} is still live in Stripe and "
+					f"this workspace is being taken away.\n\n{frappe.get_traceback()}"
+				),
+			)
+			continue
+
+		# Written here as well as by the webhook that follows. The two agree —
+		# both set Canceled — and the local write is what the ladder reads on
+		# its next pass, which may be before the event arrives.
+		frappe.db.set_value("Subscription", row["name"], "status", "Canceled")
+		cancelled.append(row["name"])
+
+	events.record(
+		tenant,
+		"Billing Stopped" if cancelled else "Billing Stop Failed",
+		reason=reason or "The workspace was taken away; the subscription was cancelled.",
+		detail={"cancelled": cancelled, "failed": failed},
+	)
+	return {"ok": not failed, "cancelled": len(cancelled), "failed": failed}
 
 
 # --------------------------------------------------------------------------- #

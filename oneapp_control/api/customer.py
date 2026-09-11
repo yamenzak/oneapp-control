@@ -53,6 +53,47 @@ def require_workspace(workspace: str | None):
 	return frappe.get_doc("Tenant", workspace)
 
 
+def require_workspace_admin(workspace: str | None):
+	"""Resolve a workspace the caller may *administer*, or refuse.
+
+	Wider than `require_workspace` by exactly one thing: an Admin member. The
+	two are separate functions rather than a flag because the line between them
+	is the one that matters here — `Tenant Member.access` says an Admin "also
+	manage[s] the workspace — the owner's role, without being the billing
+	contact", and a single resolver with a parameter is a parameter somebody
+	passes wrong on the endpoint that moves money.
+
+	So: this one for the people, the roles, the domain and the marketplace, and
+	`require_workspace` for anything that spends. The owner passes both.
+
+	Not a nicety. Stage 1 of `docs/MARKETPLACE.md` moved People, Roles and
+	Domain into workspace settings, where they are offered to the tenant's
+	`admin` audience — which an Admin member holds — and every one of them
+	answered "Workspace not found" for anybody but the owner.
+	"""
+	user = frappe.session.user
+	if not user or user == "Guest":
+		frappe.throw(_("Please sign in."), frappe.PermissionError)
+
+	if not workspace:
+		frappe.throw(_("No workspace specified."), frappe.PermissionError)
+
+	if frappe.db.get_value("Tenant", workspace, "owner_user") == user:
+		return frappe.get_doc("Tenant", workspace)
+
+	admin = frappe.db.exists(
+		"Tenant Member",
+		{"parent": workspace, "parenttype": "Tenant", "email": user, "access": "Admin"},
+	)
+	# The same words a stranger gets, for the reason `require_workspace` gives:
+	# a member who is not an admin must not be able to tell "you may not" from
+	# "there is no such workspace" any more than a stranger can.
+	if not admin:
+		frappe.throw(_("Workspace not found."), frappe.PermissionError)
+
+	return frappe.get_doc("Tenant", workspace)
+
+
 @frappe.whitelist()
 def my_workspaces() -> list[dict]:
 	"""Every workspace this account owns. The switcher reads this."""
@@ -356,7 +397,7 @@ def domain_instructions(workspace: str | None = None) -> dict:
 	record and an apex domain — are both invisible from our side and produce an
 	error that points elsewhere.
 	"""
-	tenant = require_workspace(workspace)
+	tenant = require_workspace_admin(workspace)
 
 	pending = frappe.get_all(
 		"Provisioning Job",
@@ -405,7 +446,7 @@ def domain_instructions(workspace: str | None = None) -> dict:
 @frappe.whitelist()
 def request_custom_domain(workspace: str, domain: str) -> str:
 	"""Ask for a custom domain. An operator points it; this records the ask."""
-	tenant = require_workspace(workspace)
+	tenant = require_workspace_admin(workspace)
 	domain = (domain or "").strip().lower().rstrip(".")
 
 	if not domain or "." not in domain or " " in domain:
@@ -421,6 +462,63 @@ def request_custom_domain(workspace: str, domain: str) -> str:
 		{"domain": domain},
 		idempotency_key=f"domain:{tenant.name}:{domain}",
 	).name
+
+
+# --------------------------------------------------------------------------- #
+# Going back to a backup
+# --------------------------------------------------------------------------- #
+
+#: A restore takes minutes and drops the database. Two of them in a row, from
+#: two impatient clicks, is the second one racing the first — and the second
+#: would restore over a half-restored site.
+RESTORE_EVERY_MINUTES = 30
+
+
+@frappe.whitelist(methods=["POST"])
+def restore_workspace(workspace: str, stamp: str) -> dict:
+	"""Put a workspace back to one of its own backups.
+
+	Asked from inside the workspace, by somebody who has just been shown what it
+	will cost — the counting is done there, against the live database, because
+	only the site can see its own records. What is done here is the part the
+	site cannot do: press holds the credentials that can drop a live database,
+	and only we can presign the objects it reads back.
+
+	The refusals are the point of this function. A workspace that is suspended,
+	archived or mid-provisioning has no site to restore into, and a restore
+	within half an hour of the last one is somebody clicking twice.
+	"""
+	tenant = require_workspace_admin(workspace)
+	stamp = (stamp or "").strip()
+	if not stamp:
+		frappe.throw(_("Name the backup to go back to."))
+
+	if tenant.status != "Active":
+		frappe.throw(
+			_("This workspace is {0}. A restore replaces a running site's "
+			  "database, so it is only offered while the workspace is active.")
+			.format(tenant.status)
+		)
+
+	if tenant.restored_on:
+		since = frappe.utils.time_diff_in_seconds(
+			frappe.utils.now_datetime(), frappe.utils.get_datetime(tenant.restored_on)
+		)
+		if since < RESTORE_EVERY_MINUTES * 60:
+			frappe.throw(
+				_("This workspace was restored a few minutes ago. Give that one "
+				  "time to finish before starting another.")
+			)
+
+	from oneapp_control.provisioning import runner
+
+	job = runner.enqueue(
+		tenant.name,
+		"Restore Point",
+		{"stamp": stamp, "asked_by": frappe.session.user},
+		idempotency_key=f"restore-point:{tenant.name}:{stamp}",
+	)
+	return {"ok": True, "job": job.name, "stamp": stamp}
 
 
 # --------------------------------------------------------------------------- #
@@ -492,9 +590,12 @@ def set_member_roles(workspace: str, email: str, roles: str | list | None = None
 
 	Roles and access together, because they are one decision on one screen —
 	`access` is the workspace-wide half (may they manage the workspace) and the
-	roles are the per-app half.
+	roles are the per-app half. Two controls, though, so each is written only
+	when it was actually sent: `None` means "not part of this change" and an
+	empty list means "take them all away", and collapsing those two wiped
+	somebody's roles every time an admin changed their access level.
 	"""
-	tenant = require_workspace(workspace)
+	tenant = require_workspace_admin(workspace)
 	email = (email or "").strip().lower()
 
 	if email == (tenant.owner_email or "").strip().lower():
@@ -514,7 +615,8 @@ def set_member_roles(workspace: str, email: str, roles: str | list | None = None
 			frappe.throw(_("Unknown access level {0}.").format(access))
 		row.access = access
 
-	row.roles = _validated_roles(tenant, roles)
+	if roles is not None:
+		row.roles = _validated_roles(tenant, roles)
 	tenant.save(ignore_permissions=True)
 	frappe.db.commit()
 
@@ -524,7 +626,7 @@ def set_member_roles(workspace: str, email: str, roles: str | list | None = None
 @frappe.whitelist(methods=["GET"])
 def members(workspace: str | None = None) -> dict:
 	"""Everyone who can sign in to the workspace, the owner first."""
-	tenant = require_workspace(workspace)
+	tenant = require_workspace_admin(workspace)
 
 	people = [
 		{
@@ -579,7 +681,7 @@ def members(workspace: str | None = None) -> dict:
 def invite_member(workspace: str, email: str, full_name: str = "", access: str = "Member",
                   roles: str | list | None = None) -> dict:
 	"""Add someone to the workspace, within the plan's seat count."""
-	tenant = require_workspace(workspace)
+	tenant = require_workspace_admin(workspace)
 
 	email = (email or "").strip().lower()
 	if not email:
@@ -629,7 +731,7 @@ def remove_member(workspace: str, email: str) -> dict:
 	than deleting it, because the documents they created are the workspace's and
 	Frappe hangs ownership off the account.
 	"""
-	tenant = require_workspace(workspace)
+	tenant = require_workspace_admin(workspace)
 	email = (email or "").strip().lower()
 
 	if email == (tenant.owner_email or "").strip().lower():
@@ -812,7 +914,7 @@ GRANT_LEVELS = ("Read", "Write", "Manage")
 @frappe.whitelist(methods=["GET"])
 def roles(workspace: str | None = None) -> dict:
 	"""Every role on offer, and the parts a new one can be built from."""
-	tenant = require_workspace(workspace)
+	tenant = require_workspace_admin(workspace)
 	from oneapp_control.entitlements import registry
 
 	custom = frappe.get_all(
@@ -886,7 +988,7 @@ def save_role(workspace: str, role_label: str, grants: str | list,
 	dropped from it is dropped from the role. A patch would need the browser and
 	the server to agree about what was there before, and they cannot.
 	"""
-	tenant = require_workspace(workspace)
+	tenant = require_workspace_admin(workspace)
 	rows = _grant_rows(grants)
 
 	if name:
@@ -942,7 +1044,7 @@ def delete_role(workspace: str, name: str) -> dict:
 	The Frappe role itself goes on the tenant site's next sync, because it stops
 	appearing in the manifest.
 	"""
-	tenant = require_workspace(workspace)
+	tenant = require_workspace_admin(workspace)
 	doc = frappe.get_doc("Workspace Role", name)
 	if doc.tenant != tenant.name:
 		frappe.throw(_("That role belongs to another workspace."), frappe.PermissionError)
@@ -950,3 +1052,317 @@ def delete_role(workspace: str, name: str) -> dict:
 	doc.delete(ignore_permissions=True)
 	frappe.db.commit()
 	return roles(workspace)
+
+
+# --------------------------------------------------------------------------- #
+# The marketplace
+#
+# What a workspace could have and does not. Narrower than "every space that
+# exists" in a way that matters: a Restricted space appears only where somebody
+# wrote down that this workspace may see it (`Space Entitlement.offered`),
+# because a locked card for every private app tells every customer the name of
+# every bespoke solution built for every other one.
+#
+# Four states rather than two, and the middle one is the reason this is not a
+# list of buttons. Enabling a space whose app is already on the site is a row
+# and a role — seconds. Enabling one whose app is not is an Install App job:
+# patches against a live database, minutes, and it can fail. A card that says
+# "enabled" while that is still running is a card that lies for four minutes.
+# --------------------------------------------------------------------------- #
+
+#: A job that has not finished. `Requested` is in here too: a card that shows
+#: nothing until the runner picks the job up is a card that looks like the
+#: button did nothing.
+RUNNING = ("Requested", "Running", "Awaiting Agent", "Bootstrapping")
+
+
+@frappe.whitelist(methods=["GET"])
+def marketplace(workspace: str | None = None) -> dict:
+	"""Spaces this workspace could add, each with the state of adding it."""
+	from oneapp_control.entitlements import apps as app_registry
+
+	tenant = require_workspace_admin(workspace)
+	mine = registry.spaces_for_tenant(tenant.name)
+	held = {space["space_code"] for space in mine}
+
+	offered = [
+		space for space in registry.offered_spaces(tenant.name)
+		if space["space_code"] not in held
+	]
+
+	jobs = _jobs(tenant.name)
+	carried = set(app_registry.bench_apps(tenant))
+
+	spaces = [_card(space, jobs, carried) for space in offered]
+	return {
+		"spaces": spaces,
+		# What they already have, so switching one off is done where switching
+		# one on is done rather than at a second address.
+		"held": [
+			{
+				"code": space["space_code"],
+				"label": space["space_label"],
+				"description": space.get("description") or "",
+				"logo": space.get("logo") or "",
+				"brand": space.get("brand") or "",
+			}
+			for space in mine
+		],
+		# So the page knows whether to look again rather than guessing from the
+		# card states it just rendered.
+		"working": any(space["state"] == "installing" for space in spaces),
+	}
+
+
+def _jobs(tenant: str) -> dict[str, dict]:
+	"""The newest Install App job per app, running or finished.
+
+	Both, because the failed ones are the reason this is worth reading at all.
+	A grant is written before its app arrives, so a space whose install failed
+	is enabled, in the launcher, and every screen in it is empty — which
+	`entitlements/apps.py` is explicit about being the silent failure this
+	whole mechanism exists to prevent. A card that knows is a card that can say
+	so.
+	"""
+	rows = frappe.get_all(
+		"Provisioning Job",
+		filters={"tenant": tenant, "action": "Install App"},
+		fields=["payload", "state", "last_error"],
+		# Newest last, so the loop below leaves the newest per app in the map:
+		# an app installed, revoked and reinstalled has more than one job and
+		# only the latest says anything about now.
+		order_by="creation asc",
+	)
+	found = {}
+	for row in rows:
+		app = (frappe.parse_json(row.payload) or {}).get("app") if row.payload else None
+		if app:
+			found[app] = row
+	return found
+
+
+def _card(space: dict, jobs: dict[str, dict], carried: set[str]) -> dict:
+	from oneapp_control.entitlements import apps as app_registry
+
+	needed = app_registry.required_by(space)
+	missing = [app for app in needed if app not in carried]
+	mine = [jobs[app] for app in needed if app in jobs]
+
+	because = ""
+	if missing:
+		# Named, because "unavailable" on its own is a card nobody can act on
+		# and a support ticket that starts with "it just says no".
+		state, because = "unavailable", ", ".join(missing)
+	elif any(job.state in RUNNING for job in mine):
+		state = "installing"
+	elif any(job.state in ("Failed", "Cancelled") for job in mine):
+		# Not silently back to "available": pressing the button again is what
+		# somebody would do, and it would queue the same job to fail the same
+		# way. The workspace is told, and so are we — a failed provisioning job
+		# is already on the operator's Provisioning Job screen.
+		state = "failed"
+	else:
+		state = "available"
+
+	return {
+		"code": space["space_code"],
+		"label": space["space_label"],
+		"description": space.get("description") or "",
+		"icon": space.get("icon") or "",
+		"logo": space.get("logo") or "",
+		"brand": space.get("brand") or "",
+		"state": state,
+		"missing_apps": because,
+		# What the job itself got to. Sent for `installing` and `failed` alike;
+		# empty otherwise, which is most cards.
+		"step": (mine[-1].state if mine and state in ("installing", "failed") else ""),
+	}
+
+
+@frappe.whitelist(methods=["POST"])
+def enable_space(workspace: str, space: str) -> dict:
+	"""Turn on a space this workspace was offered.
+
+	Only one it was offered: `grant` alone would let anybody who can guess a
+	space code help themselves to somebody else's bespoke solution, and the
+	whole point of the second flag is that being allowed to see a space is a
+	fact somebody wrote down.
+	"""
+	tenant = require_workspace_admin(workspace)
+
+	if space not in {one["space_code"] for one in registry.offered_spaces(tenant.name)}:
+		# Asked against the same list the marketplace drew rather than against
+		# the entitlement alone: a General space usually has no row at all, and
+		# a Restricted one they were never offered must not become theirs
+		# because they guessed its code.
+		frappe.throw(_("That space is not one this workspace was offered."),
+		             frappe.PermissionError)
+
+	registry.grant(tenant.name, space, note="Enabled from the marketplace.")
+	frappe.db.commit()
+	return marketplace(workspace)
+
+
+@frappe.whitelist(methods=["POST"])
+def disable_space(workspace: str, space: str) -> dict:
+	"""Switch a space off. Everything in it stays.
+
+	Reversible in a second: the app stays on the site, its records stay, and
+	the card goes back to the list of things this workspace could add. What it
+	does not do is free any room — that is `remove_space`, which is a different
+	sentence for a different act.
+	"""
+	tenant = require_workspace_admin(workspace)
+
+	if not frappe.db.exists(
+		"Space Entitlement", {"tenant": tenant.name, "app": space, "enabled": 1}
+	):
+		frappe.throw(_("That space is not switched on here."))
+
+	registry.disable(tenant.name, space)
+	frappe.db.commit()
+	return marketplace(workspace)
+
+
+@frappe.whitelist(methods=["POST"])
+def removable(workspace: str | None = None, space: str = "") -> dict:
+	"""What switching this space off *and* removing it would drop.
+
+	Asked before the confirmation is drawn, so the sentence a customer reads
+	names the apps rather than saying "some data". A space that shares its apps
+	with something else frees nothing, and saying so is the difference between a
+	dialog somebody reads and a dialog somebody clicks through.
+	"""
+	from oneapp_control.entitlements import apps as app_registry
+
+	tenant = require_workspace_admin(workspace)
+
+	needed = set()
+	for one in registry.spaces_for_tenant(tenant.name):
+		if one["space_code"] != space:
+			needed.update(app_registry.required_by(one))
+	needed.update(registry.BASE_APPS)
+
+	# What *this* would free, not what happens to be unneeded already. An app
+	# nothing wants is unneeded whether or not this space goes, and listing it
+	# here would make removing one space look like it deletes more than it does
+	# — which is the wrong way for a warning to be wrong.
+	spare = set(app_registry.droppable(tenant))
+
+	return {
+		"apps": [
+			app for app in app_registry.installed_on(tenant)
+			if app not in needed and app not in spare
+		],
+		"workspace_name": tenant.tenant_name,
+	}
+
+
+@frappe.whitelist(methods=["POST"])
+def remove_space(workspace: str, space: str, confirm: str = "") -> dict:
+	"""Switch a space off and uninstall what nothing else needs.
+
+	The destructive one. Uninstalling an app drops its doctypes and everything
+	in them, and the only way back is the backup the job takes first.
+
+	The confirmation is the workspace's own name, typed. Not a checkbox, which
+	is a thing people tick; not a one-time code, which proves who is at the
+	keyboard rather than that they understood — and the risk here is not
+	somebody else pressing this, it is *this* person pressing it without
+	reading. Typing the name is the one gesture that cannot be done by
+	accident, and it is what every other product asks for before it deletes
+	something that will not come back.
+	"""
+	tenant = require_workspace_admin(workspace)
+
+	if (confirm or "").strip() != (tenant.tenant_name or "").strip():
+		frappe.throw(
+			_("Type {0} to confirm.").format(tenant.tenant_name),
+			title=_("That did not match"),
+		)
+
+	if not frappe.db.exists(
+		"Space Entitlement", {"tenant": tenant.name, "app": space, "enabled": 1}
+	):
+		frappe.throw(_("That space is not switched on here."))
+
+	from oneapp_control.entitlements import apps as app_registry
+
+	# Off first: nothing should be able to open the space while its tables are
+	# being dropped, and `drop` asks what is unneeded of a workspace that no
+	# longer has it.
+	registry.disable(tenant.name, space)
+	queued = app_registry.drop(tenant, space)
+	frappe.db.commit()
+
+	answer = marketplace(workspace)
+	answer["removing"] = queued
+	return answer
+
+
+@frappe.whitelist(methods=["POST"])
+def redeem_claim_code(workspace: str, code: str) -> dict:
+	"""Put a private space on this workspace's shelf, with a string.
+
+	`offer` and not `grant`, deliberately: a code says "you may see this", and
+	pressing the card is still theirs to do. Which keeps one path through the
+	marketplace rather than two — the four card states, the bench refusal
+	included, are the same four whether an operator put the space there or a
+	code did.
+
+	Every refusal is the same sentence. A code is a guessable string, and a
+	reply that told the difference between "no such code", "that code is spent"
+	and "expired" would be a way to enumerate which codes exist and which spaces
+	we have built for other people.
+	"""
+	from frappe.utils import getdate, nowdate
+
+	tenant = require_workspace_admin(workspace)
+
+	typed = (code or "").strip().upper()
+	no = _("That code is not one we know.")
+	if not typed:
+		frappe.throw(no)
+
+	row = frappe.db.get_value(
+		"Space Claim Code", typed,
+		["name", "app", "enabled", "uses_allowed", "uses_spent", "expires_on"],
+		as_dict=True,
+	)
+	if not row or not row.enabled:
+		frappe.throw(no)
+	if row.expires_on and getdate(row.expires_on) < getdate(nowdate()):
+		frappe.throw(no)
+
+	# Asked before the count, not after. Redeeming twice from the same workspace
+	# is not an error and does not spend a use: somebody typing it again is
+	# somebody who did not notice it worked the first time, and both charging
+	# them a use and refusing them are wrong — a one-use code would retire
+	# itself on a double-click and then tell its own redeemer it never existed.
+	already = frappe.db.exists(
+		"Space Claim Redemption", {"claim_code": row.name, "tenant": tenant.name}
+	)
+	if not already and row.uses_allowed and int(row.uses_spent or 0) >= int(row.uses_allowed):
+		frappe.throw(no)
+
+	# `offer` refuses what the bench cannot carry, and that refusal names the
+	# app — which is the one case where a specific answer is right, because it
+	# is about their site rather than about our catalogue.
+	registry.offer(tenant.name, row.app, note=_("Claimed with code {0}.").format(row.name))
+
+	if not already:
+		frappe.get_doc({
+			"doctype": "Space Claim Redemption",
+			"claim_code": row.name,
+			"tenant": tenant.name,
+			"app": row.app,
+			"redeemed_by": frappe.session.user,
+			"redeemed_on": frappe.utils.now_datetime(),
+		}).insert(ignore_permissions=True)
+		frappe.db.set_value(
+			"Space Claim Code", row.name, "uses_spent",
+			int(row.uses_spent or 0) + 1, update_modified=False,
+		)
+
+	frappe.db.commit()
+	return marketplace(workspace)

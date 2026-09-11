@@ -81,9 +81,14 @@ def sync(since: str | None = None):
 			"database_quota_bytes": tenant.database_quota_bytes,
 			"max_users": tenant.max_users,
 			"background_workers": tenant.background_workers,
-			# How often this workspace copies itself into R2. The site owns the
-			# schedule because it owns the files; the plan owns the number.
+			# How often this workspace copies itself into R2, and how long a copy
+			# is kept. The site owns the schedule because it owns the files; the
+			# plan owns both numbers. Retention is sent because the site is
+			# where somebody reads it — the list of restore points is drawn
+			# there, and a list with no window beside it does not say why it
+			# ends where it does.
 			"backups_per_day": int(tenant.terms.get("backups_per_day") or 0),
+			"backup_retention_days": int(tenant.terms.get("backup_retention_days") or 0),
 		},
 		# Whether the site should enforce its quotas at all, and until when if
 		# not. A workspace over its limit because a line left its subscription
@@ -94,7 +99,15 @@ def sync(since: str | None = None):
 		# before a workspace is archived. There is no channel from here into a
 		# tenant site — every wire runs the other way — so a request is something
 		# the site collects rather than something we deliver.
-		"backup": {"requested": bool(tenant.cold_copy_requested_on)},
+		"backup": {
+			"requested": bool(tenant.cold_copy_requested_on),
+			# And the other direction: when we last put this site back to a
+			# point. The site's own copy of this value came out of the dump, so
+			# it is always older than a restore that has just happened — which
+			# is what makes a restored site reconcile its files exactly once
+			# without either end keeping a list. See `onespace/restore.py`.
+			"restored_on": str(tenant.restored_on) if tenant.restored_on else None,
+		},
 		"spaces": registry.spaces_for_tenant(tenant_name),
 		"modules": registry.entitled_modules(tenant_name),
 		"roles": registry.entitled_roles(tenant_name),
@@ -294,6 +307,13 @@ def report_usage():
 		updates["user_count"] = int(data["user_count"] or 0)
 	if "database_used_bytes" in data:
 		updates["database_used_bytes"] = float(data["database_used_bytes"] or 0)
+	# What this workspace's frozen history weighs. Recorded and not enforced:
+	# it is not files the customer uploaded, so refusing their next upload over
+	# it would be a refusal nobody could act on — and now that they can shorten
+	# the window themselves, it is a number worth being able to see per
+	# workspace and across the fleet.
+	if "frozen_bytes" in data:
+		updates["frozen_bytes"] = float(data["frozen_bytes"] or 0)
 
 	frappe.db.set_value("Tenant", tenant_name, updates)
 
@@ -400,14 +420,18 @@ def report_backup():
 def _promote_if_requested(tenant_name: str, data: dict) -> dict | None:
 	"""Promote a just-reported backup to cold storage, if one was asked for.
 
-	Only a full backup will do. An intra-day database-only run carries no files
-	and restoring from it would silently produce a workspace with every record
-	and no attachments — which looks like it worked.
+	Only a backup whose files can be found will do. Two ways that is true: the
+	run carried the tarballs, or the workspace keeps its files as objects and
+	they are sitting under `tenants/<tenant>/` in this same bucket, which the
+	purge is the only thing that deletes. What is refused is the third case — a
+	site with files on disk reporting an intra-day database-only run, where
+	restoring would silently produce a workspace with every record and no
+	attachments, which looks like it worked.
 	"""
 	tenant = frappe.get_doc("Tenant", tenant_name)
 	if not tenant.cold_copy_requested_on or tenant.cold_storage_key:
 		return None
-	if not data.get("with_files"):
+	if not (data.get("with_files") or data.get("files_in_bucket")):
 		return None
 
 	from oneapp_control.lifecycle import backups as backup_policy
@@ -669,3 +693,111 @@ def _header(name: str) -> str | None:
 	"""
 	headers = frappe.request.headers
 	return headers.get(f"X-OneSpace-{name}") or headers.get(f"X-OneApp-{name}")
+
+
+# --------------------------------------------------------------------------- #
+# The workspace's own administration, asked from inside the workspace
+# --------------------------------------------------------------------------- #
+#
+# People, Roles and Domain are facts about one workspace, so a customer editing
+# them should not have to leave it — see `docs/MARKETPLACE.md` §2. The endpoints
+# that answer them live here because the control plane owns the rows, and they
+# were written against `frappe.session.user`, which a person signed into their
+# own site does not have here.
+#
+# So the site says who is asking, and **this** decides whether that person may.
+# The trust extended is exactly one sentence — "the site is not lying about
+# which of its own people is signed in" — and it is the same trust the HMAC
+# already carries for every usage figure and every credit reservation. What is
+# *not* trusted is the answer to "does that person own this workspace", which is
+# checked here against our own rows, because a site that could assert that could
+# assert it about somebody else's workspace.
+
+def _asked_by(tenant_name: str, data: dict) -> str:
+	"""The person the site says is asking, checked against who may administer it.
+
+	Refuses rather than falling back to the owner: an unsigned assertion that
+	quietly becomes "the owner" is a bug that grants rather than one that
+	blocks.
+
+	The owner, or an Admin member — the same line `require_workspace_admin`
+	draws, and drawn twice on purpose. This is the outer door and that is the
+	inner one; a door that opened wider than the room behind it would be a door
+	whose refusals are the room's rather than its own, which is how a widened
+	allow-list quietly widens the check as well.
+	"""
+	user = (data.get("as_user") or "").strip()
+	if not user:
+		frappe.throw(_("No person named."), frappe.PermissionError)
+
+	if frappe.db.get_value("Tenant", tenant_name, "owner_user") != user and not frappe.db.exists(
+		"Tenant Member",
+		{"parent": tenant_name, "parenttype": "Tenant", "email": user, "access": "Admin"},
+	):
+		# The same words the customer surface uses, for the same reason: not
+		# confirming which workspace names exist or who holds them.
+		frappe.throw(_("Workspace not found."), frappe.PermissionError)
+
+	return user
+
+
+def _may_be_asked() -> dict:
+	"""The customer endpoints a workspace may reach from inside itself.
+
+	An allow-list and not a `getattr`: `customer` is a module of whitelisted
+	methods, and reaching it by name would make every one of them callable from
+	any tenant site the day somebody adds one.
+
+	Imported here rather than at the top because `customer` imports plenty and
+	this module is loaded on every signed call a site makes.
+	"""
+	from oneapp_control.api import customer
+
+	return {
+		"members": customer.members,
+		"invite_member": customer.invite_member,
+		"remove_member": customer.remove_member,
+		"set_member_roles": customer.set_member_roles,
+		"roles": customer.roles,
+		"save_role": customer.save_role,
+		"delete_role": customer.delete_role,
+		"domain": customer.domain_instructions,
+		"request_domain": customer.request_custom_domain,
+		"marketplace": customer.marketplace,
+		"enable_space": customer.enable_space,
+		"disable_space": customer.disable_space,
+		"removable": customer.removable,
+		"remove_space": customer.remove_space,
+		"redeem_claim_code": customer.redeem_claim_code,
+		# The one door here that destroys data. It is on this list rather than
+		# on the operator's because the decision belongs to whoever is losing
+		# the work — see `oneapp/onespace/restore.py`, where the count of what
+		# is lost is put in front of them first.
+		"restore_workspace": customer.restore_workspace,
+	}
+
+
+@frappe.whitelist(allow_guest=True, methods=["POST"])
+def workspace_admin():
+	"""One signed door for the workspace's own administration.
+
+	One rather than nine, because every one of them is the same shape — a
+	person, a workspace and a customer endpoint — and nine would be nine places
+	to forget `_asked_by`.
+	"""
+	tenant_name = _authenticate()
+	data = _body()
+	user = _asked_by(tenant_name, data)
+
+	allowed = _may_be_asked()
+	action = data.get("action") or ""
+	if action not in allowed:
+		frappe.throw(_("{0} is not something a workspace may ask.").format(action))
+
+	# As the person, so every ownership check inside `customer` runs exactly as
+	# it does when they are signed in here — this endpoint adds a door, not a
+	# way past the checks behind it.
+	frappe.set_user(user)
+	arguments = dict(data.get("arguments") or {})
+	arguments["workspace"] = tenant_name
+	return allowed[action](**arguments)

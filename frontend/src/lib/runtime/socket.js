@@ -15,13 +15,14 @@
 import { io } from 'socket.io-client'
 import { onScopeDispose, getCurrentScope } from 'vue'
 
-import { siteName, socketioPort, devServer } from './boot'
+import { siteName, socketioPort, devServer } from '@/lib/runtime/boot'
 
 let socket = null
 const subscribers = new Map()
 const documents = new Map()
 const viewers = new Map()
 const rooms = new Set()
+const events = new Map()
 
 const key = (doctype, name) => `${doctype}/${name}`
 
@@ -37,11 +38,31 @@ function socketUrl() {
   return `${window.location.origin}/${siteName}`
 }
 
+/**
+ * The secret out of `/one/link/<secret>`, or nothing.
+ *
+ * Four lines rather than an import of `shared/lib/live/link.js`, which says
+ * the same thing: this file is generated into *both* bundles and the control
+ * plane has no `shared/lib/live` to import from. A shared module that only
+ * one of the two can reach is not shared.
+ */
+function linkSecret() {
+  const found = /\/one\/link\/([^/?#]+)/.exec(window.location.pathname)
+  return found ? decodeURIComponent(found[1]) : ''
+}
+
 export function getSocket() {
   if (socket) return socket
 
   socket = io(socketUrl(), {
     withCredentials: true,
+    // The link a page at `/one/link/<secret>` was opened with, if that is
+    // where this browser is. A guest has no session and no cookie worth
+    // anything, so the secret is the only credential — and a browser cannot
+    // set headers on a websocket, which leaves the handshake query. It is
+    // already in the address bar of the page making the connection, so this
+    // puts it nowhere it was not.
+    query: linkSecret() ? { oneapp_link: linkSecret() } : undefined,
     reconnection: true,
     reconnectionAttempts: Infinity,
     // Back off rather than hammering a bench that is restarting.
@@ -83,6 +104,52 @@ export function getSocket() {
   })
 
   return socket
+}
+
+/**
+ * One `socket.on` per event name, however many handlers are waiting on it.
+ *
+ * Nothing re-registers this after a reconnect, unlike the three subscriptions
+ * above, and that is not an omission: `publish_realtime(user=...)` puts the
+ * message in the room every socket joins on connect, so there is no
+ * subscription for the server to forget. socket.io keeps the `on` across a
+ * reconnect by itself.
+ */
+function listen(event) {
+  socket.on(event, (data) => {
+    const handlers = events.get(event)
+    if (handlers) handlers.forEach((fn) => fn(data))
+  })
+}
+
+/**
+ * Call `handler` for every `event` the server sends this person.
+ *
+ * For what the server pushes rather than what a document does: an AI run
+ * arriving a phrase at a time, a long job saying where it got to. Frappe's
+ * `publish_realtime(event, message, user=...)` writes to redis, the socketio
+ * process emits it into this person's own room, and this is the other end.
+ *
+ * Nothing is subscribed to — the room is the one every socket joins on
+ * connect — so this cannot be used to listen to somebody else's traffic, and
+ * an event nobody sends simply never fires.
+ */
+export function onEvent(event, handler) {
+  const sock = getSocket()
+
+  if (!events.has(event)) {
+    events.set(event, new Set())
+    if (sock) listen(event)
+  }
+  events.get(event).add(handler)
+
+  const stop = () => {
+    const handlers = events.get(event)
+    if (handlers) handlers.delete(handler)
+  }
+
+  if (getCurrentScope()) onScopeDispose(stop)
+  return stop
 }
 
 /**
@@ -176,4 +243,5 @@ export function closeSocket() {
   documents.clear()
   viewers.clear()
   rooms.clear()
+  events.clear()
 }

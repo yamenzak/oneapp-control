@@ -20,18 +20,23 @@ def build_config() -> dict:
 	"""The keys tenant sites read out of frappe.conf.
 
 	Names here must match what `oneapp` looks up — see
-	`oneapp.oneapp_core.storage.r2.config`, `.email.outbound.config` and
+	`oneapp.onestorage.r2.config`, `.email.outbound.config` and
 	`.ai.gateway.config`.
 	"""
 	s = frappe.get_single("OneSpace Control Settings")
 
 	config = {
 		# R2
+		# The account-wide credentials only. Which bucket a site writes to, the
+		# host its public objects are served from, and any bucket-scoped keys
+		# are per tenant and go into *site* config at provisioning — a bench
+		# value for any of them is a value that is right for one jurisdiction
+		# and silently wrong for the other.
 		"oneapp_r2_account_id": s.r2_account_id,
-		"oneapp_r2_bucket": s.r2_bucket,
 		"oneapp_r2_access_key": s.r2_access_key,
 		"oneapp_r2_secret_key": s.get_password("r2_secret_key", raise_exception=False),
-		"oneapp_r2_public_base": s.r2_public_base,
+		# Sheets
+		"oneapp_link_previews": 1 if s.link_previews else None,
 		# Email
 		"oneapp_cf_email_token": s.get_password("cf_email_token", raise_exception=False),
 		"oneapp_mail_domain": s.mail_domain,
@@ -44,11 +49,34 @@ def build_config() -> dict:
 		"oneapp_cf_api_token": s.get_password("cf_api_token", raise_exception=False),
 		"oneapp_ai_markup": s.ai_markup_multiplier,
 		# Control plane
+		#
+		# Two names for one site, and a tenant needs both. The first is the API
+		# origin it signs its calls to; the second is where it sends a *person*
+		# — the account area, where the workspaces somebody owns are listed and
+		# where a second one is started. A customer must never be handed the
+		# operator hostname, so this is built from the public URL where one is
+		# set. See `portal.customer_base_url`.
 		"oneapp_control_url": s.control_plane_url,
+		"oneapp_account_url": _account_url(),
 	}
 
 	# Never push a blank over a value that is already set on the bench.
 	return {k: v for k, v in config.items() if v not in (None, "")}
+
+
+def _account_url() -> str:
+	"""Where a customer's account lives, or nothing.
+
+	Blank on a bench with no control plane URL set at all — bring-up order —
+	and the tenant then draws the sentence without a link rather than one that
+	goes nowhere.
+	"""
+	from oneapp_control import portal
+
+	try:
+		return portal.account_url()
+	except Exception:
+		return ""
 
 
 @frappe.whitelist()

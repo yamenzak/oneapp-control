@@ -324,6 +324,21 @@ class PressClient:
 		"""
 		return self.call("press.api.site.install_app", name=site, app=app)
 
+	def uninstall_app(self, site: str, app: str):
+		"""Take one app off a running site, with everything it stored.
+
+		The destructive twin of `install_app`, and the asymmetry is the point:
+		installing adds tables, uninstalling drops them. Frappe's own
+		`uninstall-app` removes the app's doctypes and their data, and there is
+		no undo but a restore — which is why the job that calls this takes a
+		backup as its first step.
+
+		Press names this the same way it names the install. If a bench ever
+		answers "unknown method" here, that is what to check first: this is the
+		one call in the client that has never run against a real press.
+		"""
+		return self.call("press.api.site.uninstall_app", name=site, app=app)
+
 	def migrate(self, site: str, skip_failing_patches: bool = False):
 		return self.call(
 			"press.api.site.migrate", name=site, skip_failing_patches=skip_failing_patches
@@ -339,6 +354,16 @@ class PressClient:
 	# ------------------------------------------------------------------ #
 	# Capacity — what exists on the account to build a shard from
 	# ------------------------------------------------------------------ #
+
+	def sites(self) -> list[dict]:
+		"""Every site on the account, whether or not we know whose it is.
+
+		The listing an orphan shows up in: a site press is charging us for that
+		no `Tenant` claims, and a workspace whose site press has never heard of.
+		Neither is visible from a table of ours, by construction — a mirror only
+		ever contains what we remembered to put in it.
+		"""
+		return self.call("press.api.site.all", timeout=READ_TIMEOUT) or []
 
 	def servers(self) -> list[dict]:
 		"""Every server on the account, with the cluster each sits in."""
