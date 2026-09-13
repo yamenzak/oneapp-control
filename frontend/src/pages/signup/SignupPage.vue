@@ -7,7 +7,7 @@
       </div>
 
       <div v-if="!open.checked" class="grid place-items-center py-16">
-        <LoadingIndicator class="size-5 text-ink-gray-5" />
+        <LoadingIndicator class="size-5 text-ink-muted" />
       </div>
 
       <Alert v-else-if="!open.open" theme="amber" :title="__('Signups are paused')">
@@ -16,7 +16,7 @@
         </template>
       </Alert>
 
-      <div v-else class="flex flex-col gap-4 rounded-6 border border-outline-gray-2 bg-surface-base p-5">
+      <Panel pad="loose" v-else class="flex flex-col gap-4">
         <FormControl
           v-model="form.workspace_name"
           :label="__('Workspace name')"
@@ -87,10 +87,10 @@
           @click="submit"
         />
 
-        <p class="text-center text-p-sm text-ink-gray-5">
+        <p class="text-center text-p-sm text-ink-muted">
           {{ __('Payment comes next. Your workspace is created once it clears.') }}
         </p>
-      </div>
+      </Panel>
     </div>
   </div>
 </template>
@@ -102,6 +102,7 @@ import { Alert, Avatar, Button, ErrorMessage, FormControl, LoadingIndicator, deb
 import { callMethod } from '@/lib/runtime/resource'
 import { __ } from '@/lib/runtime/translate'
 import { errorText } from '@/lib/runtime/errors'
+import Panel from '@/components/Panel.vue'
 
 const jurisdictions = computed(() => [
   { label: __('Global network'), value: 'Global' },

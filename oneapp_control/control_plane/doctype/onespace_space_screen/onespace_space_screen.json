@@ -9,11 +9,13 @@
   "label",
   "singular",
   "icon",
+  "screen_group",
   "cb_view_source",
   "document_type",
   "fields",
   "component",
   "hide_new",
+  "hide_in_nav",
   "status_field",
   "view_types",
   "view_settings",
@@ -59,6 +61,12 @@
    "options": "lucide-layout-grid\nlucide-database\nlucide-sparkles\nlucide-shield\nlucide-users\nlucide-user-round\nlucide-graduation-cap\nlucide-stethoscope\nlucide-briefcase\nlucide-calendar\nlucide-clock\nlucide-wrench\nlucide-git-compare\nlucide-file-text\nlucide-receipt\nlucide-wallet\nlucide-shopping-cart\nlucide-package\nlucide-truck\nlucide-factory\nlucide-store\nlucide-message-square\nlucide-mail\nlucide-phone\nlucide-bus\nlucide-route\nlucide-map-pin\nlucide-map\nlucide-server\nlucide-hard-drive\nlucide-layers\nlucide-chart-line\nlucide-chart-pie\nlucide-book-open"
   },
   {
+   "description": "Optional heading in the navigation. Screens sharing one must be declared together.",
+   "fieldname": "screen_group",
+   "fieldtype": "Data",
+   "label": "Group"
+  },
+  {
    "fieldname": "cb_view_source",
    "fieldtype": "Column Break"
   },
@@ -87,6 +95,13 @@
    "fieldname": "hide_new",
    "fieldtype": "Check",
    "label": "Never offer New"
+  },
+  {
+   "default": "0",
+   "description": "Keep this screen out of the rail. For one reached from another screen \u2014 a reference a button opens, not a place somebody goes looking.",
+   "fieldname": "hide_in_nav",
+   "fieldtype": "Check",
+   "label": "Not in the navigation"
   },
   {
    "description": "Which field says where a record stands \u2014 the one whose value goes on the badge beside a record's name. A fieldname, checked against the doctype like any other; the colours are the doctype's own Document States, not something to repeat here. Empty is no badge.",
