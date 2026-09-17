@@ -128,6 +128,11 @@ DOCTYPES = [
 	("Address", "Write", 0),
 	# Booked calls. A rep makes their own and has to be able to close one.
 	("Appointment", "Manage", 0),
+	# And calls that actually happened. Manage rather than Write, and not
+	# `if_owner`: a call log whose rows a rep cannot correct is a call log they
+	# stop writing, and a desk where you cannot see that a colleague already
+	# rang this person rings them twice.
+	("One Call", "Manage", 0),
 	# A customer is the other side of a won deal. Write rather than Manage —
 	# converting a deal creates one, and deleting a customer is an accounting
 	# decision made in an accounting space.
@@ -143,6 +148,12 @@ DOCTYPES = [
 	# The history, which is written by the controller and read by everybody.
 	# Not writable by anyone: a log somebody can edit is not a log.
 	("One Stage Change", "Read", 0),
+	# What counts as answering in time. Read for a rep and Write for the
+	# manager, for exactly the reason the stages are: a rep who can lengthen
+	# their own target is a rep who is never late.
+	("One Response Target", "Read", 0),
+	("One Working Day", "Read", 0),
+	("Holiday List", "Read", 0),
 	("Sales Stage", "Read", 0),
 	("Opportunity Type", "Read", 0),
 	("Opportunity Lost Reason", "Read", 0),
@@ -165,9 +176,18 @@ DOCTYPES = [
 	("Contract", "Read", 0),
 	("Contract Template", "Read", 0),
 	("OneSpace Saved View", "Write", 1),
+	# What this workspace calls this space's screens — `onespace/words.py`,
+	# `docs/ONECRM.md` stage 7. Read for everybody, because the Words tab is
+	# on a page they can open and a tab that draws nothing reads as broken;
+	# written by the seat that runs the desk, because renaming Deals to
+	# Donations changes what every colleague reads.
+	("OneSpace Word", "Read", 0),
 
 	# ----- Sales manager --------------------------------------------------- #
 	("One Deal Stage", "Write", 0, "manager"),
+	("OneSpace Word", "Write", 0, "manager"),
+	("One Response Target", "Write", 0, "manager"),
+	("One Working Day", "Write", 0, "manager"),
 	("Sales Stage", "Write", 0, "manager"),
 	("Opportunity Type", "Write", 0, "manager"),
 	("Opportunity Lost Reason", "Write", 0, "manager"),
@@ -211,6 +231,65 @@ NEXT_STEP = [
 	                "anybody about."},
 ]
 
+# What a desk answers in, to begin with — `docs/ONECRM.md` stage 6.
+#
+# Two rows and a five-day week, and every number in here is meant to be argued
+# with: the point of a target being a row is that a workspace changes it in one
+# place rather than asking for a deployment. Written once by the seeder and
+# never edited again, the same rule `STAGES` follows.
+#
+# A lead gets four working hours and a deal gets a working day. Not because a
+# deal matters less — because a lead that goes unanswered is *lost*, and a deal
+# already has somebody on both ends of it.
+#
+#: name, applies to, working hours, the week
+WORKING_WEEK = [
+	("Monday", "09:00:00", "17:00:00"),
+	("Tuesday", "09:00:00", "17:00:00"),
+	("Wednesday", "09:00:00", "17:00:00"),
+	("Thursday", "09:00:00", "17:00:00"),
+	("Friday", "09:00:00", "17:00:00"),
+]
+
+TARGETS = [
+	("Answer a lead", "Lead", 4, WORKING_WEEK),
+	("Come back on a deal", "Opportunity", 8, WORKING_WEEK),
+]
+
+# The four fields a measured record carries — `docs/ONECRM.md` stage 6.
+#
+# On both Lead and Opportunity, in the same order, so a person who has learned
+# to read one has learned to read the other. `insert_after` is the next-step
+# pair deliberately: what happens next and when it is due are one question, and
+# splitting them across the form was how the follow-up field got missed the
+# first time.
+ANSWERING = [
+	{"fieldname": "custom_respond_by", "label": "Answer by",
+	 "fieldtype": "Datetime", "read_only": 1,
+	 "insert_after": "custom_next_step_on", "in_list_view": 1,
+	 "description": "When an answer is due, counted in working hours against "
+	                "the target's own week and holiday list — so something "
+	                "that arrives on Friday evening is not late on Saturday "
+	                "morning."},
+	{"fieldname": "custom_answered_on", "label": "Answered on",
+	 "fieldtype": "Datetime", "read_only": 1,
+	 "insert_after": "custom_respond_by",
+	 "description": "The first answer, whatever form it took: a message sent, "
+	                "a call made. Never overwritten — a second email is not a "
+	                "second chance to have been on time."},
+	{"fieldname": "custom_answering", "label": "Answering",
+	 "fieldtype": "Select", "options": "\nWaiting\nAnswered\nLate",
+	 "read_only": 1, "insert_after": "custom_answered_on", "in_list_view": 1,
+	 "description": "Where this stands. Written rather than worked out per "
+	                "row, because a list sorts by a column and a board groups "
+	                "by one."},
+	{"fieldname": "custom_response_target", "label": "Target",
+	 "fieldtype": "Link", "options": "One Response Target", "read_only": 1,
+	 "insert_after": "custom_answering",
+	 "description": "Which target decided the deadline, so a date somebody "
+	                "disagrees with names the row to argue with."},
+]
+
 CUSTOM_FIELDS = [
 	# The column the pipeline is drawn by — `docs/ONECRM.md` stage 1. A Link to
 	# a row a workspace maintains, because ERPNext's `Sales Stage` has a name
@@ -241,6 +320,16 @@ CUSTOM_FIELDS = [
 	{**NEXT_STEP[1], "dt": "Lead", "insert_after": "custom_next_step"},
 	{**NEXT_STEP[0], "dt": "Opportunity", "insert_after": "status"},
 	{**NEXT_STEP[1], "dt": "Opportunity", "insert_after": "custom_next_step"},
+	# How long this one had to be answered in, and whether it was —
+	# `docs/ONECRM.md` stage 6, `onecrm/answering.py`. Four fields on both,
+	# because a lead nobody answered in two days is lost and a deal nobody came
+	# back to after the meeting is the same loss one stage later.
+	#
+	# Every one of them read-only. The deadline is the target's arithmetic, the
+	# answer is stamped by the thing that answered — a sent message, a call
+	# out — and the state is written from the two. A measure somebody can type
+	# into is not a measure.
+	*[{**one, "dt": dt} for dt in ("Lead", "Opportunity") for one in ANSWERING],
 ]
 
 SCREENS = [
@@ -280,7 +369,8 @@ SCREENS = [
 		# read as the same row three times.
 		"fields": "title,customer_name,custom_stage,custom_stage_since,"
 		          "opportunity_amount,probability,expected_closing,"
-		          "custom_next_step_on,opportunity_owner,status",
+		          "custom_next_step_on,custom_answering,opportunity_owner,"
+		          "status",
 		"order_by": "expected_closing asc",
 		"view_types": "board,list,dashboard,calendar",
 		"status_field": "status",
@@ -354,7 +444,16 @@ SCREENS = [
 			# and only the record knows which.
 			"timeline": {"inherits": "party_name"},
 			"showcase": {
-				"eyebrow_field": "customer_name",
+				# Who the deal is with, and what kind of party that is —
+				# `docs/ONECRM.md` stage 7. `party_name` and not
+				# `customer_name`: ERPNext's party is a Dynamic Link against
+				# `opportunity_from`, so a deal is with a Lead, a Customer or
+				# a Prospect — a person, a company or a public body — and a
+				# header that read the customer name said nothing at all on a
+				# deal with somebody who is not a customer yet, which is every
+				# deal in the pipeline.
+				"eyebrow_field": "party_name",
+				"eyebrow_kind_field": "opportunity_from",
 				"badge_field": "custom_stage",
 				"facts": [
 					{"field": "opportunity_amount", "label": "Value"},
@@ -419,9 +518,14 @@ SCREENS = [
 		# actual question a lead sits inside: unqualified, being worked,
 		# qualified. So the board is drawn by that and the badge keeps `status`.
 		"screen": "leads", "label": "Leads", "singular": "Lead",
-		"icon": "lucide-phone", "document_type": "Lead",
+		"icon": "lucide-inbox", "document_type": "Lead",
 		"fields": "lead_name,company_name,qualification_status,status,email_id,"
-		          "mobile_no,territory,utm_source,custom_next_step_on",
+		          "mobile_no,territory,utm_source,custom_next_step_on,"
+		          # Whether anybody has come back to them yet — stage 6. On
+		          # the list and not only on the record, because "which of
+		          # these is late" is a question about the page rather than
+		          # about a row.
+		          "custom_answering",
 		"order_by": "modified desc",
 		"view_types": "board,list,grid,dashboard",
 		"status_field": "status",
@@ -551,6 +655,41 @@ SCREENS = [
 		}),
 	},
 	{
+		# Calls made and taken — `docs/ONECRM.md` stage 5, and `onecrm/calls.py`
+		# for why the doctype is ours and why it is about anything.
+		#
+		# A week first, because that is the question a call log answers that a
+		# list does not: not "what did we say to this deal" — the record's own
+		# timeline has that — but "how much of Tuesday was on the phone, and to
+		# whom". The diary lens is `person`, which is who made the call rather
+		# than who logged it, so somebody logging a colleague's call does not
+		# put it in their own week.
+		"screen": "calls", "label": "Calls", "singular": "Call",
+		"icon": "lucide-phone", "document_type": "One Call",
+		"fields": "with_whom,way,number,at,minutes,outcome,about_name,person",
+		"order_by": "at desc",
+		"view_types": "calendar,list,dashboard",
+		"view_settings": json.dumps({
+			"calendar": {"start_field": "at", "diary": True,
+			             "about": {"person": "@me"}},
+			"dashboard": {"widgets": [
+				{"kind": "number", "label": "Calls", "width": 4},
+				{"kind": "number", "label": "Minutes on the phone",
+				 "aggregate": "sum", "field": "minutes", "width": 4},
+				{"kind": "number", "label": "Average length",
+				 "aggregate": "avg", "field": "minutes", "width": 4},
+				# The three that are not Answered are the point: a column of
+				# attempts is what tells you somebody is avoiding you.
+				{"kind": "donut", "label": "How they went",
+				 "group_by": "outcome", "width": 6},
+				{"kind": "donut", "label": "Which way", "group_by": "way",
+				 "width": 6},
+				{"kind": "bar", "label": "Who made them", "group_by": "person",
+				 "horizontal": True, "width": 12},
+			]},
+		}),
+	},
+	{
 		# What a won deal became. Read for a rep and managed by the desk: a
 		# contract is the document somebody is held to, and "who may change the
 		# dates on it" is not a question a pipeline should be answering.
@@ -599,6 +738,20 @@ SCREENS = [
 		"icon": "lucide-chart-line", "document_type": "One Deal Stage",
 		"fields": "stage_name,category,probability,colour,position",
 		"order_by": "position asc",
+		"view_types": "list",
+	},
+	{
+		# How long a lead or a deal has to be answered in, and the week that is
+		# counted against — `docs/ONECRM.md` stage 6. The one other table on
+		# this page a manager actually edits, and the one that most rewards
+		# being in a place somebody can find: a target nobody can see is a
+		# number people argue with rather than change.
+		"screen": "targets", "hide_in_nav": 1, "label": "Response targets",
+		"singular": "Response target",
+		"icon": "lucide-clock", "document_type": "One Response Target",
+		"fields": "target_name,applies_to,when_field,when_value,hours,"
+		          "holiday_list,position,enabled",
+		"order_by": "position asc, target_name asc",
 		"view_types": "list",
 	},
 	{
