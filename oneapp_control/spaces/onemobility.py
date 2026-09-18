@@ -21,7 +21,7 @@ SPACE = {
 	"space_code": "onemobility",
 	"space_label": "OneMobility",
 	"module": "OneMobility",
-	"role_name": "OneSpace Mobility",
+	"role_name": "Mobility",
 	# Nothing. The network is ours, so a bare site can carry this — which is
 	# also what makes it saleable to a transport authority who wants a viewer
 	# and not an ERP.
@@ -64,27 +64,6 @@ SPACE = {
 # behaviour hands out all three, which is a decision somebody made rather than
 # one they got.
 # --------------------------------------------------------------------------- #
-ROLES = [
-	{
-		"role_key": "viewer",
-		"label": "Viewer",
-		"is_default": 1,
-		"description": "See the network, the live map and the history. Saves "
-		               "its own views and changes nothing else.",
-	},
-	{
-		"role_key": "planner",
-		"label": "Planner",
-		"description": "Maintain the network: agencies, lines, stops, vehicles "
-		               "and how each mode is drawn.",
-	},
-	{
-		"role_key": "feeds",
-		"label": "Feed manager",
-		"description": "Own where the data comes from — sources, feeds and the "
-		               "order they win in. The job that can take the map down.",
-	},
-]
 
 # Four parts, not three: the fourth is which role the grant belongs to, and no
 # fourth part means all of them. Read the list as three columns — what a viewer
@@ -113,6 +92,12 @@ DOCTYPES = [
 	# people stop using by the second week. `if_owner`, so a viewer's saved
 	# views are a viewer's.
 	("OneSpace Saved View", "Write", 1),
+	# What this workspace calls this space's screens — `onespace/words.py`,
+	# `docs/ONECRM.md` stage 7. Read for everybody, because the Words tab is
+	# on a page they can open and a tab that draws nothing reads as broken;
+	# written by the seat that runs the desk, because a screen's name is what
+	# every colleague reads.
+	("OneSpace Word", "Read", 0),
 
 	# ----- Planner -------------------------------------------------------- #
 	#
@@ -120,22 +105,34 @@ DOCTYPES = [
 	# every role in this space, so a planner's manifest carries both a Read and
 	# a Write row for `Transit Line` — `sync.sync_permissions` keeps the wider
 	# of the two, whatever order they arrive in.
-	("Transit Agency", "Write", 0, "planner"),
-	("Transit Line", "Write", 0, "planner"),
-	("Transit Stop", "Write", 0, "planner"),
-	("Transit Vehicle", "Write", 0, "planner"),
+	("Transit Agency", "Write", 0, "manager"),
+	("OneSpace Word", "Write", 0, "manager"),
+	("Transit Line", "Write", 0, "manager"),
+	("Transit Stop", "Write", 0, "manager"),
+	("Transit Vehicle", "Write", 0, "manager"),
 	# How the map draws each mode. Not a record anybody browses — the picker is
 	# on the map itself, where the effect is visible — but it is a document, so
 	# it gets permissions, a history and an audit trail like everything else.
 	# The planner's, because it is a decision about how the network reads.
-	("Transit Marker Style", "Write", 0, "planner"),
+	("Transit Marker Style", "Write", 0, "manager"),
 
 	# ----- Feed manager --------------------------------------------------- #
-	("Transit Source", "Manage", 0, "feeds"),
-	("Transit Feed", "Write", 0, "feeds"),
+	("Transit Source", "Manage", 0, "admin"),
+	("Transit Feed", "Write", 0, "admin"),
 ]
 
 SCREENS = [
+	{
+		# The front page: what this space is about, in the four lists somebody
+		# opening it in the morning actually wants. Every block is another
+		# screen of this space — `onespace/homepage.py` — so a block draws that
+		# screen's own columns and is checked where every list is checked, and
+		# a block whose screen this reader cannot open is not sent at all.
+		"screen": "home", "label": "Home", "singular": "Day",
+		"icon": "lucide-layout-grid",
+		"component": "home",
+		"view_settings": json.dumps({"home": {"blocks": ["claims", "feeds", "vehicles", "lines"]}}),
+	},
 	{
 		# The one screen that is not a list of records: a map of the network
 		# with a clock, live on the right of now and history on the left. The
@@ -203,7 +200,7 @@ SCREENS = [
 		"view_types": "list,board,grid,dashboard",
 		"status_field": "status",
 		"view_settings": json.dumps({
-			"cards": {"card_fields": ["agency", "mode"]},
+			"grid": {"card_fields": ["agency", "mode"]},
 			# The network as a *catalogue*, which is a different question from
 			# the network as a set of readings. Insights answers how the lines
 			# ran; this answers what there are — and it is the one an operator
@@ -211,9 +208,9 @@ SCREENS = [
 			# they expected before they trust a single number off it.
 			"dashboard": {
 				"widgets": [
-					{"kind": "number", "label": "Lines", "width": 3},
+					{"kind": "number", "label": "Lines", "width": 4},
 					{"kind": "donut", "label": "By mode", "group_by": "mode", "width": 4},
-					{"kind": "bar", "label": "By agency", "group_by": "agency", "width": 5},
+					{"kind": "bar", "label": "By agency", "group_by": "agency", "width": 4},
 					{"kind": "bar", "label": "By status", "group_by": "status", "width": 12},
 				],
 			},
@@ -243,10 +240,10 @@ SCREENS = [
 			# a list of two thousand stops and obvious in one ring.
 			"dashboard": {
 				"widgets": [
-					{"kind": "number", "label": "Stops", "width": 3},
+					{"kind": "number", "label": "Stops", "width": 4},
 					{"kind": "donut", "label": "How each one is known",
 					 "group_by": "status", "width": 4},
-					{"kind": "bar", "label": "By fare zone", "group_by": "zone", "width": 5},
+					{"kind": "bar", "label": "By fare zone", "group_by": "zone", "width": 4},
 				],
 			},
 		}),
@@ -333,10 +330,13 @@ SCREENS = [
 		"view_settings": json.dumps({
 			"dashboard": {
 				"widgets": [
-					{"kind": "count", "label": "Deliveries", "field": ""},
-					{"kind": "sum", "label": "Lines", "field": "lines_seen"},
-					{"kind": "sum", "label": "Stops", "field": "stops_seen"},
-					{"kind": "sum", "label": "Trips", "field": "trips_seen"},
+					{"kind": "number", "label": "Deliveries", "width": 3},
+					{"kind": "number", "label": "Lines", "aggregate": "sum",
+					 "field": "lines_seen", "width": 3},
+					{"kind": "number", "label": "Stops", "aggregate": "sum",
+					 "field": "stops_seen", "width": 3},
+					{"kind": "number", "label": "Trips", "aggregate": "sum",
+					 "field": "trips_seen", "width": 3},
 				],
 			},
 		}),

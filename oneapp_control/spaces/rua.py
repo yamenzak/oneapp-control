@@ -21,7 +21,7 @@ SPACE = {
 	"space_code": "rua",
 	"space_label": "RUA",
 	"module": "Rua",
-	"role_name": "OneSpace Rua",
+	"role_name": "RUA",
 	# Every doctype below is ERPNext's or HRMS's — a project, a quotation, an
 	# LPO, an attendance row — so a site without them is a site where this
 	# space's every screen is empty. Declared, so a grant onto a bench that
@@ -32,13 +32,8 @@ SPACE = {
 	"sort_order": 20,
 	"availability": "Restricted",
 	"description": "Projects, quotations, LPOs, invoices and the people on site.",
-	# What this space looks like, in four words. See `onespace/theming.py`
-	# for the vocabulary and `lib/theme.js` for what each word moves.
-	#
-	# Dark, because the thing they open first is a photograph of a building and
-	# a hero over a white page is a picture in a frame rather than a place. A
-	# ground of near-black rather than frappe-ui's own dark grey, so the hero
-	# has nowhere to end.
+	# What this space looks like, in two words. See `onespace/theming.py` for
+	# the vocabulary and `lib/theme.js` for what each word moves.
 	#
 	# The accent is **Caterpillar yellow**, and it is the right one for a reason
 	# better than taste: it is the colour of the plant on their own sites, so it
@@ -47,22 +42,31 @@ SPACE = {
 	#
 	# Yellow is also the colour that proved the accent needed to carry its own
 	# ink. `--surface-gray-10` is the solid button and frappe-ui puts
-	# `--ink-base` on it, which in dark mode is near-black — right on red, and a
-	# label you cannot read on `#ffcd11`. The browser now decides that from the
+	# `--ink-base` on it, which is near-black — right on most accents, and a
+	# label you cannot read on `#ffcd11`. The browser decides that from the
 	# accent's luminance rather than a space declaring it, so the next space to
 	# pick a bright colour does not discover this the way we did.
 	#
 	# Soft rather than sharp. The first pass reasoned from the product — glass
 	# and aluminium facades, so hard corners — and that is a nice sentence about
-	# a screen nobody enjoyed using: a hundred square-cornered boxes on black is
-	# a spreadsheet, not a place. The photographs carry the hardness.
+	# a screen nobody enjoyed using: a hundred square-cornered boxes is a
+	# spreadsheet, not a place. The photographs carry the hardness.
 	#
-	# None of it is code. Any other space says four different words and gets its
+	# **No `mode` and no `ground`, since the desk.** Both were right when a
+	# space was a page: dark, because the thing they open first is a photograph
+	# of a building and a hero over a white page is a picture in a frame rather
+	# than a place. What changed is that a space is no longer only its own
+	# screens — OneCloud, the mailbox and every preview window open on the desk
+	# *inside* it, so RUA's `dark` was the whole product in dark whatever its
+	# reader had chosen, and RUA's near-black `ground` overwrote the five
+	# surface steps the shell itself is drawn out of. Both intents still exist
+	# and still work; a space that really is a place of its own may take them.
+	# This one is a job book, and its colour is enough.
+	#
+	# None of it is code. Any other space says two different words and gets its
 	# own personality out of the same components.
 	"theme": json.dumps({
-		"mode": "dark",
 		"accent": "#ffcd11",
-		"ground": "#0d0d0f",
 		"radius": "soft",
 	}),
 }
@@ -76,6 +80,13 @@ SPACE = {
 # against: a person picking a customer does not need permission to invent an
 # Item or move a Territory.
 DOCTYPES = [
+	# What this workspace calls this space's screens — `onespace/words.py`,
+	# `docs/ONECRM.md` stage 7. Writable without a role key, unlike the four
+	# spaces beside it, because this one declares no roles: everybody who holds
+	# RUA holds all of it, so there is no seat to withhold a rename from.
+	# Named to the manager seat like every other space: renaming a screen
+	# renames it for every colleague, which is not a thing everybody does.
+	("OneSpace Word", "Write", 0, "manager"),
 	("Project", "Manage", 0),
 	("Quotation", "Manage", 0),
 	("Purchase Order", "Manage", 0),
@@ -189,6 +200,12 @@ CUSTOM_FIELDS = [
 	 "fieldtype": "Float", "insert_after": "late_entry"},
 ]
 
+#: The Project Type OnePeople stamps on an onboarding or an exit checklist, which
+#: this space's projects screen leaves out. Mirrors `onehr.boarding.BOARDING`;
+#: `tests/test_manifests.py` keeps the two in step.
+BOARDING_PROJECTS = "Employee boarding"
+
+
 SCREENS = [
 	{
 		# The spine. Everything else in this space hangs off a project, and it
@@ -198,13 +215,35 @@ SCREENS = [
 		"fields": "project_name,custom_stage,customer,estimated_costing,"
 		          "percent_complete,custom_location",
 		"order_by": "modified desc",
+		# Not the induction checklists. HRMS builds an onboarding or an exit
+		# out of a Project and a Task per step, so without this somebody's
+		# first week sits in the list beside a client's building — see
+		# `onehr/boarding.py`, which types them. A Frappe `!=` keeps the rows
+		# that have no type at all, which is every project anybody made.
+		"filters": json.dumps({"project_type": ["!=", BOARDING_PROJECTS]}),
 		"view_types": "list,board,dashboard",
+		# Two ways of reading one list. The dashboard is the portfolio as
+		# numbers — declared because the screen already offered the view type
+		# and had nothing for it to draw, and a dashboard with no widgets is
+		# dropped on the way out, so the tab simply was not there.
+		#
 		# Opening a project is not opening a form. It is a building, a contract
 		# value, a percentage done, the variation orders hanging off it and
 		# every quotation, LPO, invoice and payment written against it — see
 		# `onespace/showcase.py`. The hero is what is filed against the
 		# record, which for these people is the architect's perspectives.
-		"view_settings": json.dumps({"showcase": {
+		"view_settings": json.dumps({"dashboard": {"widgets": [
+			{"kind": "number", "label": "Projects", "width": 3},
+			{"kind": "number", "label": "Contract value", "aggregate": "sum",
+			 "field": "estimated_costing", "width": 3},
+			{"kind": "number", "label": "Average complete", "aggregate": "avg",
+			 "field": "percent_complete", "suffix": "%", "width": 3},
+			{"kind": "donut", "label": "By stage", "group_by": "custom_stage",
+			 "width": 3},
+			{"kind": "bar", "label": "Contract value by client",
+			 "group_by": "customer", "aggregate": "sum",
+			 "field": "estimated_costing", "horizontal": True, "width": 12},
+		]}, "showcase": {
 			"images": True,
 			"eyebrow_field": "custom_location",
 			"badge_field": "custom_stage",
@@ -265,6 +304,21 @@ SCREENS = [
 		"order_by": "posting_date desc",
 		"view_types": "list,dashboard",
 		"status_field": "status",
+		"view_settings": json.dumps({"dashboard": {"widgets": [
+			{"kind": "number", "label": "Invoices", "width": 4},
+			{"kind": "number", "label": "Invoiced", "aggregate": "sum",
+			 "field": "grand_total", "width": 4},
+			{"kind": "number", "label": "Outstanding", "aggregate": "sum",
+			 "field": "outstanding_amount", "width": 4},
+			{"kind": "donut", "label": "Where each one stands",
+			 "group_by": "status", "width": 6},
+			{"kind": "bar", "label": "Invoiced by project", "group_by": "project",
+			 "aggregate": "sum", "field": "grand_total", "horizontal": True,
+			 "width": 6},
+			{"kind": "line", "label": "Invoiced by month", "group_by": "posting_date",
+			 "grain": "month", "aggregate": "sum", "field": "grand_total",
+			 "width": 12},
+		]}}),
 	},
 	{
 		"screen": "payments", "label": "Payments", "singular": "Payment",
@@ -273,6 +327,21 @@ SCREENS = [
 		"order_by": "posting_date desc",
 		"view_types": "list,dashboard",
 		"status_field": "status",
+		"view_settings": json.dumps({"dashboard": {"widgets": [
+			{"kind": "number", "label": "Payments", "width": 4},
+			{"kind": "number", "label": "Received and paid", "aggregate": "sum",
+			 "field": "paid_amount", "width": 4},
+			{"kind": "number", "label": "Average", "aggregate": "avg",
+			 "field": "paid_amount", "width": 4},
+			{"kind": "donut", "label": "In and out", "group_by": "payment_type",
+			 "width": 6},
+			{"kind": "bar", "label": "By party", "group_by": "party",
+			 "aggregate": "sum", "field": "paid_amount", "horizontal": True,
+			 "width": 6},
+			{"kind": "line", "label": "By month", "group_by": "posting_date",
+			 "grain": "month", "aggregate": "sum", "field": "paid_amount",
+			 "width": 12},
+		]}}),
 	},
 	{
 		# Clients and consultants both — a consultant is a customer nobody
@@ -312,6 +381,18 @@ SCREENS = [
 		"order_by": "attendance_date desc",
 		"view_types": "list,dashboard",
 		"status_field": "status",
+		"view_settings": json.dumps({"dashboard": {"widgets": [
+			{"kind": "number", "label": "Days recorded", "width": 4},
+			{"kind": "number", "label": "Overtime hours", "aggregate": "sum",
+			 "field": "custom_overtime_hours", "width": 4},
+			{"kind": "number", "label": "Present", "width": 4,
+			 "filters": {"status": "Present"}},
+			{"kind": "donut", "label": "How the days went", "group_by": "status",
+			 "width": 6},
+			{"kind": "bar", "label": "Overtime by person", "group_by": "employee",
+			 "aggregate": "sum", "field": "custom_overtime_hours",
+			 "horizontal": True, "width": 6},
+		]}}),
 	},
 	{
 		# The two registers OneSpace ships itself. A licence that expires and a

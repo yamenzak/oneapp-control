@@ -23,6 +23,8 @@
   "sec_manifest",
   "doctypes",
   "custom_fields",
+  "field_levels",
+  "alerts",
   "icon",
   "logo",
   "brand",
@@ -140,12 +142,26 @@
    "options": "JSON"
   },
   {
+   "description": "JSON list of [{\"dt\": \"Employee\", \"level\": 1, \"roles\": [\"People officer\"], \"fields\": [\"ctc\", \"iban\"]}]. The fields are raised to that permission level and only the named roles are granted it \u2014 which is how a space can hand out a directory without handing out the personnel file. Roles are named by their label, as in `alerts`.",
+   "fieldname": "field_levels",
+   "fieldtype": "Code",
+   "label": "Field Levels",
+   "options": "JSON"
+  },
+  {
+   "description": "JSON list of the notification rules this space arrives with, e.g. [{\"doctype\": \"Leave Application\", \"when\": \"submitted\", \"to_field\": \"leave_approver\", \"subject\": \"Leave to approve\"}]. Seeded by the tenant sync the first time it sees them and never again: a workspace edits, pauses and deletes them like its own.",
+   "fieldname": "alerts",
+   "fieldtype": "Code",
+   "label": "Alerts",
+   "options": "JSON"
+  },
+  {
    "default": "lucide-layout-grid",
    "description": "Rendered by the launcher and the app sidebar.",
    "fieldname": "icon",
    "fieldtype": "Select",
    "label": "Icon",
-   "options": "lucide-layout-grid\nlucide-database\nlucide-sparkles\nlucide-shield\nlucide-users\nlucide-user-round\nlucide-graduation-cap\nlucide-stethoscope\nlucide-briefcase\nlucide-calendar\nlucide-clock\nlucide-wrench\nlucide-git-compare\nlucide-file-text\nlucide-receipt\nlucide-wallet\nlucide-shopping-cart\nlucide-package\nlucide-truck\nlucide-factory\nlucide-store\nlucide-message-square\nlucide-mail\nlucide-phone\nlucide-bus\nlucide-route\nlucide-map-pin\nlucide-map\nlucide-server\nlucide-hard-drive\nlucide-layers\nlucide-chart-line\nlucide-chart-pie\nlucide-book-open"
+   "options": "lucide-layout-grid\nlucide-database\nlucide-sparkles\nlucide-shield\nlucide-lock\nlucide-users\nlucide-user-round\nlucide-graduation-cap\nlucide-stethoscope\nlucide-briefcase\nlucide-circle-check\nlucide-inbox\nlucide-list-tree\nlucide-columns-3\nlucide-tag\nlucide-calendar\nlucide-clock\nlucide-wrench\nlucide-git-compare\nlucide-git-branch\nlucide-file-text\nlucide-receipt\nlucide-wallet\nlucide-shopping-cart\nlucide-landmark\nlucide-credit-card\nlucide-hand-coins\nlucide-percent\nlucide-book-open-text\nlucide-package\nlucide-truck\nlucide-factory\nlucide-store\nlucide-message-square\nlucide-mail\nlucide-phone\nlucide-bus\nlucide-route\nlucide-map-pin\nlucide-map\nlucide-server\nlucide-hard-drive\nlucide-layers\nlucide-chart-line\nlucide-chart-pie\nlucide-table\nlucide-book-open"
   },
   {
    "description": "Shown on the rail. Without one the icon is drawn instead.",
@@ -158,7 +174,7 @@
    "fieldname": "brand",
    "fieldtype": "Select",
    "label": "Brand",
-   "options": "\none\nonespace\noneadmin\noneinventory\nonewallet\nonecredit\nonemobility\nonearchive\nonestorage\nonedisplay\nonesheet\nonedoc\nonecode\nonehr\nonebook\nonecrm\noneai\nonemarket\nonemail\nonecalendar"
+   "options": "\none\nonecalendar\nonestorage\nonescratchpad\nonedoc\nonetask\noneai\nonemail\nonesheet\nonemobility\nonehr\nonecrm\nonebook\noneinventory\noneproject\nonecode\noneforms\noneslide\noneticket\nonesignature\nonedisplay\noneadmin\nonegovernance\nonemarket\nonedb\nonefit\nonestudy"
   },
   {
    "default": "0",
