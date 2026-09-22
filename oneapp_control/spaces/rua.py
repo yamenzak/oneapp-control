@@ -4,7 +4,7 @@ Read `docs/RUA.md` first: it is the argument, and this is the half a machine
 reads. Its companion is `oneapp/onespace/plans/rua.py`, which brings their
 four years of records across; between them they are the whole delivery.
 
-Everything here is over a doctype ERPNext, HRMS or OneSpace already ships. That
+Everything here is over a doctype ERPNext, HRMS or One already ships. That
 is the point of the move: a party becomes a Customer, an LPO becomes a Purchase
 Order, and twenty-six bespoke doctypes stop being anybody's code to maintain.
 What is bespoke is the *vocabulary* — they say LPO and not Purchase Order, and
@@ -200,7 +200,7 @@ CUSTOM_FIELDS = [
 	 "fieldtype": "Float", "insert_after": "late_entry"},
 ]
 
-#: The Project Type OnePeople stamps on an onboarding or an exit checklist, which
+#: The Project Type OneHR stamps on an onboarding or an exit checklist, which
 #: this space's projects screen leaves out. Mirrors `onehr.boarding.BOARDING`;
 #: `tests/test_manifests.py` keeps the two in step.
 BOARDING_PROJECTS = "Employee boarding"
@@ -395,7 +395,7 @@ SCREENS = [
 		]}}),
 	},
 	{
-		# The two registers OneSpace ships itself. A licence that expires and a
+		# The two registers One ships itself. A licence that expires and a
 		# letter that has to be numbered are what a company *is*, and neither
 		# is anybody's customer data.
 		"screen": "compliance", "label": "Compliance", "singular": "Document",
